@@ -308,9 +308,7 @@ function requireAuth(req, res) {
   }
   
   if (!isAuthenticated(req)) {
-    recordFailedAuth(ip);
     const sanitizedUrl = req.url.replace(/token=[^&]+/g, 'token=REDACTED');
-    auditLog('auth_failed', ip, { url: sanitizedUrl });
     setSecurityHeaders(res);
     res.writeHead(401, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Unauthorized' }));
