@@ -2787,25 +2787,26 @@ async function checkMFAStatus() {
 }
 
 function generateQRCode(text) {
-  const size = 256;
-  const margin = 4;
   const qr = qrcodegen.QrCode.encodeText(text, qrcodegen.QrCode.Ecc.MEDIUM);
-  const border = margin;
-  const scale = Math.floor((size - border * 2) / qr.size);
-  const svg = [];
-  svg.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}">`);
-  svg.push(`<rect width="${size}" height="${size}" fill="#ffffff"/>`);
+  const scale = 8;
+  const border = 4;
+  const totalSize = (qr.size + border * 2) * scale;
+  const canvas = document.createElement('canvas');
+  canvas.width = totalSize;
+  canvas.height = totalSize;
+  canvas.style.imageRendering = 'pixelated';
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, totalSize, totalSize);
+  ctx.fillStyle = '#000000';
   for (let y = 0; y < qr.size; y++) {
     for (let x = 0; x < qr.size; x++) {
       if (qr.getModule(x, y)) {
-        const px = border + x * scale;
-        const py = border + y * scale;
-        svg.push(`<rect x="${px}" y="${py}" width="${scale}" height="${scale}" fill="#000000"/>`);
+        ctx.fillRect((x + border) * scale, (y + border) * scale, scale, scale);
       }
     }
   }
-  svg.push('</svg>');
-  return svg.join('');
+  return '<img src="' + canvas.toDataURL() + '" width="256" height="256" style="image-rendering:pixelated;">';
 }
 
 async function setupMFA() {
