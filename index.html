@@ -2018,6 +2018,7 @@ body {
 </div>
 
 <script>
+const API_BASE = window.location.pathname.replace(/\/+$/, '');
 const TOKEN_KEY = 'dashboardToken';
 const TOKEN_EXPIRY_KEY = 'dashboardTokenExpiry';
 const TOKEN_LIFETIME = 24 * 60 * 60 * 1000;
@@ -2166,7 +2167,7 @@ async function handleRegister(event) {
   registerBtn.textContent = 'Creating account...';
   
   try {
-    const res = await fetch('/api/auth/register', {
+    const res = await fetch(API_BASE + '/api/auth/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
@@ -2216,7 +2217,7 @@ async function handleLogin(event) {
       body.rememberMe = true;
     }
     
-    const res = await fetch('/api/auth/login', {
+    const res = await fetch(API_BASE + '/api/auth/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -2289,7 +2290,7 @@ async function handleRecovery(event) {
   recoveryBtn.textContent = 'Resetting password...';
   
   try {
-    const res = await fetch('/api/auth/reset-password', {
+    const res = await fetch(API_BASE + '/api/auth/reset-password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ recoveryToken, newPassword })
@@ -2342,7 +2343,7 @@ async function handleChangePassword(event) {
   changePasswordBtn.textContent = 'Changing password...';
   
   try {
-    const res = await authFetch('/api/auth/change-password', {
+    const res = await authFetch(API_BASE + '/api/auth/change-password', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ currentPassword, newPassword })
@@ -2374,7 +2375,7 @@ async function handleLogout() {
   if (!confirm('Are you sure you want to logout?')) return;
   
   try {
-    await authFetch('/api/auth/logout', { method: 'POST' });
+    await authFetch(API_BASE + '/api/auth/logout', { method: 'POST' });
   } catch (e) {
   }
   
@@ -2410,13 +2411,13 @@ function showLogin() {
 
 async function checkAuth() {
   try {
-    const statusRes = await fetch('/api/auth/status');
+    const statusRes = await fetch(API_BASE + '/api/auth/status');
     const statusData = await statusRes.json();
     
     const token = getStoredToken();
     
     if (token) {
-      const verifyRes = await fetch('/api/sessions', {
+      const verifyRes = await fetch(API_BASE + '/api/sessions', {
         headers: { 'Authorization': `Bearer ${token}` }
       });
       if (verifyRes.ok) {
@@ -2753,7 +2754,7 @@ const qrcodegen = (function() {
 
 async function checkMFAStatus() {
   try {
-    const res = await authFetch('/api/auth/mfa-status');
+    const res = await authFetch(API_BASE + '/api/auth/mfa-status');
     const data = await res.json();
     const enabled = data.enabled;
     
@@ -2808,7 +2809,7 @@ async function setupMFA() {
   btn.textContent = 'Setting up...';
   
   try {
-    const res = await authFetch('/api/auth/setup-mfa', { method: 'POST' });
+    const res = await authFetch(API_BASE + '/api/auth/setup-mfa', { method: 'POST' });
     const data = await res.json();
     
     if (res.ok && data.secret) {
@@ -2854,7 +2855,7 @@ async function disableMFA() {
   btn.textContent = 'Disabling...';
   
   try {
-    const res = await authFetch('/api/auth/disable-mfa', {
+    const res = await authFetch(API_BASE + '/api/auth/disable-mfa', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ totpCode: code })
@@ -2930,9 +2931,9 @@ async function fetchData() {
   try {
     // Fast path: load sessions, costs, system first
     const [sessRes, costsRes, sysRes] = await Promise.all([
-      authFetch('/api/sessions'),
-      authFetch('/api/costs'),
-      authFetch('/api/system')
+      authFetch(API_BASE + '/api/sessions'),
+      authFetch(API_BASE + '/api/costs'),
+      authFetch(API_BASE + '/api/system')
     ]);
     
     sessions = await sessRes.json();
@@ -2942,7 +2943,7 @@ async function fetchData() {
     updateDashboard();
     
     // Then load usage async (slower endpoint)
-    authFetch('/api/usage').then(r => r.json()).then(u => {
+    authFetch(API_BASE + '/api/usage').then(r => r.json()).then(u => {
       usage = u;
       try { updateDashboard(); } catch {}
     }).catch(() => {});
@@ -3193,7 +3194,7 @@ function refreshExpandedMessages(key) {
   if (!s) return;
   const el = document.getElementById('expanded-msgs-' + CSS.escape(key));
   if (!el) { expandedSessionKey = null; return; }
-  authFetch('/api/session-messages?id=' + encodeURIComponent(s.sessionId || s.key))
+  authFetch(API_BASE + '/api/session-messages?id=' + encodeURIComponent(s.sessionId || s.key))
     .then(r => r.json())
     .then(msgs => {
       if (!document.getElementById('expanded-msgs-' + CSS.escape(key))) return;
@@ -3473,7 +3474,7 @@ function updateSessions() {
 let _cachedClaudeUsage = null;
 async function fetchClaudeUsage() {
   try {
-    const r = await authFetch('/api/claude-usage');
+    const r = await authFetch(API_BASE + '/api/claude-usage');
     const d = await r.json();
     if (d.error) return;
     _cachedClaudeUsage = d;
@@ -3531,7 +3532,7 @@ async function scrapeClaudeUsage() {
   if (btn2) { btn2.textContent = '⏳'; btn2.disabled = true; }
   if (label && _usageAutoInterval) label.textContent = '⏳...';
   try {
-    await authFetch('/api/claude-usage-scrape', { method: 'POST' });
+    await authFetch(API_BASE + '/api/claude-usage-scrape', { method: 'POST' });
     // Poll until data changes or timeout
     const oldTs = _cachedClaudeUsage?.scraped_at || '';
     for (let i = 0; i < 12; i++) {
@@ -3914,7 +3915,7 @@ function connectLiveFeed() {
   }
 
   const token = getStoredToken();
-  liveEventSource = new EventSource('/api/live?token=' + encodeURIComponent(token));
+  liveEventSource = new EventSource(API_BASE + '/api/live?token=' + encodeURIComponent(token));
   
   liveEventSource.onmessage = (event) => {
     if (feedPaused) return;
@@ -4022,7 +4023,7 @@ let healthHistory = [];
 
 async function fetchHealthHistory() {
   try {
-    const res = await authFetch('/api/health-history');
+    const res = await authFetch(API_BASE + '/api/health-history');
     healthHistory = await res.json();
     renderHealthSparklines();
   } catch {}
@@ -4056,12 +4057,12 @@ function renderHealthSparklines() {
 async function fetchNewData() {
   try {
     const [cronsRes, gitRes, svcRes, memRes, tokRes, rtRes] = await Promise.all([
-      authFetch('/api/crons'),
-      authFetch('/api/git'),
-      authFetch('/api/services'),
-      authFetch('/api/memory'),
-      authFetch('/api/tokens-today'),
-      authFetch('/api/response-time')
+      authFetch(API_BASE + '/api/crons'),
+      authFetch(API_BASE + '/api/git'),
+      authFetch(API_BASE + '/api/services'),
+      authFetch(API_BASE + '/api/memory'),
+      authFetch(API_BASE + '/api/tokens-today'),
+      authFetch(API_BASE + '/api/response-time')
     ]);
     const crons = await cronsRes.json();
     const git = await gitRes.json();
@@ -4180,7 +4181,7 @@ window.runCronJob = async function(id) {
 let memoryFiles = [];
 async function fetchMemoryFiles() {
   try {
-    const res = await authFetch('/api/memory-files');
+    const res = await authFetch(API_BASE + '/api/memory-files');
     memoryFiles = await res.json();
     renderMemoryFilesList();
   } catch {}
@@ -4211,7 +4212,7 @@ window.loadMemoryFile = async function(name) {
     const contentEl = document.getElementById('memoryFileContent');
     titleEl.textContent = name;
     contentEl.innerHTML = '<div style="color:var(--text-muted);">Loading...</div>';
-    const res = await authFetch('/api/memory-file?path=' + encodeURIComponent(name));
+    const res = await authFetch(API_BASE + '/api/memory-file?path=' + encodeURIComponent(name));
     const content = await res.text();
     let html = content
       .replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -4234,7 +4235,7 @@ let _currentKeyFileRaw = '';
 
 window.fetchKeyFiles = async function fetchKeyFiles() {
   try {
-    const res = await authFetch('/api/key-files');
+    const res = await authFetch(API_BASE + '/api/key-files');
     keyFiles = await res.json();
     renderKeyFilesList();
   } catch {}
@@ -4281,7 +4282,7 @@ window.loadKeyFile = async function(name) {
   renderKeyFilesList();
 
   try {
-    const res = await authFetch('/api/key-file?path=' + encodeURIComponent(name));
+    const res = await authFetch(API_BASE + '/api/key-file?path=' + encodeURIComponent(name));
     if (!res.ok) { contentEl.innerHTML = '<div style="color:var(--red);">Failed to load: ' + res.status + '</div>'; return; }
     const content = await res.text();
     _currentKeyFileRaw = content;
@@ -4346,7 +4347,7 @@ window.saveKeyFile = async function() {
   saveBtn.disabled = true;
 
   try {
-    const res = await authFetch('/api/key-file', {
+    const res = await authFetch(API_BASE + '/api/key-file', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: currentKeyFile, content })
@@ -4603,7 +4604,7 @@ function openSessionDetail(key) {
     <div><div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;margin-bottom:4px;">Channel</div><div style="font-size:13px;">${s.channel || '--'}</div></div>`;
   document.getElementById('modalMessages').innerHTML = '<div style="color:var(--text-muted);font-size:13px;">Loading...</div>';
   document.getElementById('sessionModal').style.display = 'flex';
-  authFetch('/api/session-messages?id=' + encodeURIComponent(s.sessionId || s.key))
+  authFetch(API_BASE + '/api/session-messages?id=' + encodeURIComponent(s.sessionId || s.key))
     .then(r => r.json())
     .then(msgs => {
       document.getElementById('modalMessages').innerHTML = msgs.map(m => {
@@ -4709,7 +4710,7 @@ async function quickAction(action, evt) {
 // Tailscale Status
 async function fetchTailscaleStatus() {
   try {
-    const res = await authFetch('/api/tailscale');
+    const res = await authFetch(API_BASE + '/api/tailscale');
     const data = await res.json();
     
     const statusEl = document.getElementById('tailscaleStatus');
@@ -4761,7 +4762,7 @@ async function fetchTailscaleStatus() {
 // Lifetime Stats
 async function fetchLifetimeStats() {
   try {
-    const res = await authFetch('/api/lifetime-stats');
+    const res = await authFetch(API_BASE + '/api/lifetime-stats');
     const data = await res.json();
     
     document.getElementById('ltTokens').textContent = data.totalTokens >= 1000000 ? (data.totalTokens / 1000000).toFixed(1) + 'M' : data.totalTokens >= 1000 ? (data.totalTokens / 1000).toFixed(0) + 'k' : data.totalTokens;
