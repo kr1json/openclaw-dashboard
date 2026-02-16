@@ -2791,16 +2791,19 @@ function generateQRCode(text) {
   const border = 4;
   const s = qr.size + border * 2;
   let svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${s} ${s}" width="256" height="256" shape-rendering="crispEdges">`;
-  svg += `<rect width="${s}" height="${s}" fill="#fff"/>`;
+  svg += `<rect width="${s}" height="${s}" fill="#ffffff"/>`;
+  let path = '';
   for (let y = 0; y < qr.size; y++) {
     for (let x = 0; x < qr.size; x++) {
       if (qr.getModule(x, y)) {
-        svg += `<rect x="${x + border}" y="${y + border}" width="1" height="1" fill="#000"/>`;
+        path += `M${x + border},${y + border}h1v1h-1z`;
       }
     }
   }
+  svg += `<path d="${path}" fill="#000000"/>`;
   svg += '</svg>';
-  return svg;
+  const b64 = btoa(svg);
+  return `<img src="data:image/svg+xml;base64,${b64}" width="256" height="256" style="image-rendering:pixelated;">`;
 }
 
 async function setupMFA() {
@@ -2814,8 +2817,7 @@ async function setupMFA() {
     
     if (res.ok && data.secret) {
       document.getElementById('mfaSecretDisplay').textContent = data.secret;
-      const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=256x256&data=' + encodeURIComponent(data.otpauth_uri);
-      document.getElementById('qrCodeContainer').innerHTML = '<img src="' + qrUrl + '" width="256" height="256" alt="QR Code" style="border-radius:8px;">';
+      document.getElementById('qrCodeContainer').innerHTML = generateQRCode(data.otpauth_uri);
       document.getElementById('mfaDisabledView').style.display = 'none';
       document.getElementById('mfaSetupView').style.display = 'block';
     } else {
