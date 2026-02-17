@@ -1643,9 +1643,13 @@ body.sidebar-pinned .main {
           <select id="cardStatus" class="search-box" style="max-width:none;"><option>Backlog</option><option>In Progress</option><option>Review</option><option>Done</option></select>
           <input id="cardLink" class="search-box" placeholder="Link (optional)" style="max-width:none;" />
         </div>
+        <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+          <select id="cardSessionKey" class="search-box" style="max-width:none;"><option value="">Link active subagent session (optional)</option></select>
+          <input id="cardRunId" class="search-box" placeholder="runId (optional)" style="max-width:none;" />
+          <input id="cardAttachment" class="search-box" placeholder="Attachment path/url (optional)" style="max-width:none;" />
+        </div>
         <textarea id="cardText" class="search-box" placeholder="Text note (default)" style="max-width:none;min-height:80px;"></textarea>
         <div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
-          <input id="cardAttachment" class="search-box" placeholder="Attachment path/url (optional)" style="max-width:none;" />
           <button class="pause-btn" onclick="createCard()">+ Add Card</button>
         </div>
       </div>
@@ -3085,11 +3089,23 @@ function escapeHtml(str) {
     .replace(/'/g, '&#39;');
 }
 
+async function fetchSubagentHints() {
+  try {
+    const res = await authFetch(API_BASE + '/api/subagents-active');
+    const items = await res.json();
+    const sel = document.getElementById('cardSessionKey');
+    if (!sel) return;
+    const first = '<option value="">Link active subagent session (optional)</option>';
+    sel.innerHTML = first + (items || []).map(x => `<option value="${escapeHtml(x.key)}">${escapeHtml(x.label || x.key)} · ${escapeHtml((x.key||'').slice(0,24))}</option>`).join('');
+  } catch {}
+}
+
 async function fetchTaskBoard() {
   try {
     const res = await authFetch(API_BASE + '/api/task-board');
     boardData = await res.json();
     renderTaskBoard();
+    fetchSubagentHints();
   } catch (e) {
     console.error('task-board fetch failed', e);
   }
@@ -3103,10 +3119,11 @@ function renderTaskBoard() {
   root.innerHTML = cols.map(col => {
     const inCol = cards.filter(c => c.status === col);
     const html = inCol.map(c => `
-      <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:8px;">
+      <div draggable="true" ondragstart="dragCardStart(event,'${c.id}')" style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:8px;cursor:grab;">
         <div style="font-weight:600;font-size:13px;margin-bottom:6px;">${escapeHtml(c.title || '(untitled)')}</div>
         <div style="font-size:12px;color:var(--text-muted);white-space:pre-wrap;max-height:100px;overflow:auto;">${escapeHtml(c.text || '')}</div>
         <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">👤 ${escapeHtml(c.assignee || '-')} · ${escapeHtml(c.priority || 'normal')}</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">🔗 ${escapeHtml(c.sessionKey || '-')} · 🧵 ${escapeHtml(c.runId || '-')}</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
           <button class="qa-btn" onclick="moveCard('${c.id}','Backlog')">Backlog</button>
           <button class="qa-btn" onclick="moveCard('${c.id}','In Progress')">In Progress</button>
@@ -3119,9 +3136,14 @@ function renderTaskBoard() {
         </div>
       </div>
     `).join('');
-    return `<div class="card"><h3 class="card-title">${col} <span style="color:var(--text-muted);">(${inCol.length})</span></h3>${html || '<div style="color:var(--text-muted);font-size:12px;">Empty</div>'}</div>`;
+    return `<div class="card" ondragover="dragColOver(event)" ondrop="dropCardTo(event,'${col}')"><h3 class="card-title">${col} <span style="color:var(--text-muted);">(${inCol.length})</span></h3>${html || '<div style="color:var(--text-muted);font-size:12px;">Empty</div>'}</div>`;
   }).join('');
 }
+
+let draggedCardId = null;
+function dragCardStart(ev, cardId) { draggedCardId = cardId; try { ev.dataTransfer.setData('text/plain', cardId); } catch {} }
+function dragColOver(ev) { ev.preventDefault(); }
+function dropCardTo(ev, status) { ev.preventDefault(); const id = draggedCardId || (ev.dataTransfer ? ev.dataTransfer.getData('text/plain') : ''); if (id) moveCard(id, status); draggedCardId = null; }
 
 async function createCard() {
   const title = document.getElementById('cardTitle')?.value?.trim();
@@ -3130,11 +3152,15 @@ async function createCard() {
   const status = document.getElementById('cardStatus')?.value || 'Backlog';
   const link = document.getElementById('cardLink')?.value?.trim();
   const attachment = document.getElementById('cardAttachment')?.value?.trim();
+  const sessionKey = document.getElementById('cardSessionKey')?.value?.trim() || '';
+  const runId = document.getElementById('cardRunId')?.value?.trim() || '';
   if (!title) return showToast('Card title is required', 'warning');
   const body = {
     title, text, assignee, status,
     links: link ? [link] : [],
-    attachments: attachment ? [attachment] : []
+    attachments: attachment ? [attachment] : [],
+    sessionKey,
+    runId
   };
   const res = await authFetch(API_BASE + '/api/task-board/cards', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (!res.ok) {
@@ -3145,6 +3171,8 @@ async function createCard() {
   document.getElementById('cardText').value = '';
   document.getElementById('cardLink').value = '';
   document.getElementById('cardAttachment').value = '';
+  document.getElementById('cardRunId').value = '';
+  document.getElementById('cardSessionKey').value = '';
   await fetchTaskBoard();
   showToast('Card created', 'success');
 }

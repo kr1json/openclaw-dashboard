@@ -447,6 +447,21 @@ function getSessionsJson() {
   } catch (e) { return []; }
 }
 
+function getSubagentSessionHints() {
+  const sessions = getSessionsJson();
+  return sessions
+    .filter(s => String(s.key || '').includes('subagent'))
+    .map(s => ({
+      key: s.key,
+      sessionId: s.sessionId,
+      label: s.label,
+      updatedAt: s.updatedAt || 0,
+      lastMessage: s.lastMessage || ''
+    }))
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    .slice(0, 30);
+}
+
 function getCostData() {
   try {
     const files = fs.readdirSync(sessDir).filter(f => f.endsWith('.jsonl'));
@@ -1813,6 +1828,11 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify(readTaskBoard()));
       return;
     }
+    if (req.url === '/api/subagents-active') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getSubagentSessionHints()));
+      return;
+    }
     if (req.url === '/api/task-board/cards' && req.method === 'POST') {
       parseJsonBody(req, 128 * 1024).then(body => {
         const board = readTaskBoard();
@@ -1832,6 +1852,8 @@ const server = http.createServer((req, res) => {
           priority: String(body.priority || 'normal'),
           links: Array.isArray(body.links) ? body.links.slice(0, 20) : [],
           attachments: Array.isArray(body.attachments) ? body.attachments.slice(0, 20) : [],
+          sessionKey: String(body.sessionKey || ''),
+          runId: String(body.runId || ''),
           subagent: body.subagent || null,
           control: { state: 'idle', lastAction: null, lastErrorLine: '' },
           createdAt: now,
@@ -1875,6 +1897,8 @@ const server = http.createServer((req, res) => {
             if (typeof body.priority === 'string') card.priority = body.priority;
             if (Array.isArray(body.links)) card.links = body.links.slice(0, 20);
             if (Array.isArray(body.attachments)) card.attachments = body.attachments.slice(0, 20);
+            if (typeof body.sessionKey === 'string') card.sessionKey = body.sessionKey;
+            if (typeof body.runId === 'string') card.runId = body.runId;
           } else if (action === 'control') {
             const cmd = String(body.cmd || '').toLowerCase();
             if (cmd !== 'stop' && cmd !== 'retry') {
