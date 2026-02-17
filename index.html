@@ -1296,6 +1296,10 @@ body.sidebar-pinned .main {
         <span class="icon">🗂️</span>
         <span class="nav-text">Board</span>
       </div>
+      <div class="nav-item" data-page="agents">
+        <span class="icon">🧬</span>
+        <span class="nav-text">Agents</span>
+      </div>
       <div class="nav-item" data-page="costs">
         <span class="icon">💰</span>
         <span class="nav-text">Costs</span>
@@ -1639,7 +1643,7 @@ body.sidebar-pinned .main {
         <h3 class="card-title">Create Card</h3>
         <div style="display:grid;grid-template-columns:2fr 1fr 1fr 1fr;gap:10px;margin-bottom:10px;">
           <input id="cardTitle" class="search-box" placeholder="Title" style="max-width:none;" />
-          <input id="cardAssignee" class="search-box" placeholder="Assignee(agent)" style="max-width:none;" />
+          <select id="cardAssignee" class="search-box" style="max-width:none;"><option value="">Select agent</option></select>
           <select id="cardStatus" class="search-box" style="max-width:none;"><option>Backlog</option><option>In Progress</option><option>Review</option><option>Done</option></select>
           <input id="cardLink" class="search-box" placeholder="Link (optional)" style="max-width:none;" />
         </div>
@@ -1648,12 +1652,57 @@ body.sidebar-pinned .main {
           <input id="cardRunId" class="search-box" placeholder="runId (optional)" style="max-width:none;" />
           <input id="cardAttachment" class="search-box" placeholder="Attachment path/url (optional)" style="max-width:none;" />
         </div>
-        <textarea id="cardText" class="search-box" placeholder="Text note (default)" style="max-width:none;min-height:80px;"></textarea>
+        <textarea id="cardText" class="search-box" placeholder="Text note (default)" style="max-width:none;min-height:180px;"></textarea>
         <div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
           <button class="pause-btn" onclick="createCard()">+ Add Card</button>
         </div>
       </div>
       <div id="boardColumns" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;"></div>
+
+      <div id="cardEditModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:1200;align-items:center;justify-content:center;">
+        <div style="width:min(900px,96vw);max-height:90vh;overflow:auto;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:18px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <h3 class="card-title" style="margin:0;">Edit Task Card</h3>
+            <button class="qa-btn" onclick="closeCardModal()">✖</button>
+          </div>
+          <input id="editCardId" type="hidden" />
+          <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:10px;margin-bottom:10px;">
+            <input id="editTitle" class="search-box" placeholder="Title" style="max-width:none;" />
+            <select id="editAssignee" class="search-box" style="max-width:none;"><option value="">Select agent</option></select>
+            <select id="editStatus" class="search-box" style="max-width:none;"><option>Backlog</option><option>In Progress</option><option>Review</option><option>Done</option></select>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+            <input id="editSessionKey" class="search-box" placeholder="sessionKey" style="max-width:none;" />
+            <input id="editRunId" class="search-box" placeholder="runId" style="max-width:none;" />
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+            <input id="editLink" class="search-box" placeholder="Link" style="max-width:none;" />
+            <input id="editAttachment" class="search-box" placeholder="Attachment" style="max-width:none;" />
+          </div>
+          <textarea id="editText" class="search-box" style="max-width:none;min-height:220px;" placeholder="Text note"></textarea>
+          <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:10px;">
+            <button class="qa-btn" onclick="closeCardModal()">Cancel</button>
+            <button class="pause-btn" onclick="saveCardModal()">Save</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="page" id="agents">
+      <div class="page-header">
+        <h1 class="page-title">Agents</h1>
+        <p class="page-subtitle">멀티 에이전트 통합 뷰 + 진행중 태스크/서브에이전트 활동</p>
+      </div>
+      <div class="grid grid-2 mb-24">
+        <div class="card">
+          <h3 class="card-title">Agent Overview</h3>
+          <div id="agentsOverviewTable"></div>
+        </div>
+        <div class="card">
+          <h3 class="card-title">Task / Subagent Activity</h3>
+          <div id="taskActivityList" style="max-height:420px;overflow:auto;"></div>
+        </div>
+      </div>
     </div>
 
     <div class="page" id="limits">
@@ -3020,6 +3069,8 @@ let sortDir = 'desc';
 let selectedSessions = new Set();
 let notificationsEnabled = false;
 let boardData = { columns: ['Backlog','In Progress','Review','Done'], cards: [] };
+let agentsOverview = [];
+let taskActivity = { sessions: [], cards: [] };
 const SIDEBAR_PIN_KEY = 'sidebarPinned';
 
 function setSidebarPinned(pinned) {
@@ -3069,6 +3120,10 @@ document.querySelectorAll('.nav-item').forEach(item => {
     if (page === 'board') {
       fetchTaskBoard();
     }
+    if (page === 'agents') {
+      fetchAgentsOverview();
+      fetchTaskActivity();
+    }
   });
 });
 
@@ -3087,6 +3142,79 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function formatAgo(ms) {
+  if (ms < 60000) return Math.max(1, Math.round(ms / 1000)) + 's ago';
+  if (ms < 3600000) return Math.round(ms / 60000) + 'm ago';
+  if (ms < 86400000) return Math.round(ms / 3600000) + 'h ago';
+  return Math.round(ms / 86400000) + 'd ago';
+}
+
+function populateAgentSelects() {
+  const ids = (agentsOverview || []).map(a => a.agent).filter(Boolean);
+  const options = ['<option value="">Select agent</option>'].concat(ids.map(id => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`)).join('');
+  const c = document.getElementById('cardAssignee');
+  if (c) c.innerHTML = options;
+  const e = document.getElementById('editAssignee');
+  if (e) e.innerHTML = options;
+}
+
+async function fetchAgentsOverview() {
+  try {
+    const res = await authFetch(API_BASE + '/api/agents-overview');
+    agentsOverview = await res.json();
+    renderAgentsOverview();
+    populateAgentSelects();
+  } catch (e) {
+    console.error('agents-overview fetch failed', e);
+  }
+}
+
+function renderAgentsOverview() {
+  const el = document.getElementById('agentsOverviewTable');
+  if (!el) return;
+  const rows = (agentsOverview || []).map(a => `
+    <div style="display:grid;grid-template-columns:140px 80px 70px 80px 1fr 90px;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;">
+      <div><b>${escapeHtml(a.agent)}</b></div>
+      <div>${a.sessions || 0} sess</div>
+      <div>${a.active || 0} active</div>
+      <div>${a.subagents || 0} sub</div>
+      <div style="color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(a.lastMessage || '-')}</div>
+      <div style="color:var(--text-muted);">${a.lastUpdatedAt ? formatAgo(Date.now()-a.lastUpdatedAt) : '-'}</div>
+    </div>`).join('');
+  el.innerHTML = rows || '<div class="empty-state-text">No agents</div>';
+}
+
+async function fetchTaskActivity() {
+  try {
+    const res = await authFetch(API_BASE + '/api/task-activity');
+    taskActivity = await res.json();
+    renderTaskActivity();
+  } catch (e) {
+    console.error('task-activity fetch failed', e);
+  }
+}
+
+function renderTaskActivity() {
+  const el = document.getElementById('taskActivityList');
+  if (!el) return;
+  const list = []
+    .concat((taskActivity.sessions || []).map(x => ({ ...x, bucket: 'session' })))
+    .concat((taskActivity.cards || []).map(x => ({ ...x, bucket: 'card' })))
+    .sort((a,b)=> (b.updatedAt||0) - (a.updatedAt||0))
+    .slice(0, 120);
+
+  el.innerHTML = list.map(x => `
+    <div style="padding:8px 10px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--bg-tertiary);">
+      <div style="display:flex;justify-content:space-between;gap:8px;">
+        <div style="font-size:12px;font-weight:600;">${escapeHtml(x.label || x.id || '-')}</div>
+        <div style="font-size:11px;color:var(--text-muted);">${escapeHtml(x.status || '-')}</div>
+      </div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:3px;">${escapeHtml(x.type || x.bucket)} · ${escapeHtml(x.model || '-')} · ${x.ageMs != null ? formatAgo(x.ageMs) : '-'}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(x.snippet || '')}</div>
+    </div>
+  `).join('') || '<div class="empty-state-text">No activity</div>';
 }
 
 async function fetchSubagentHints() {
@@ -3111,6 +3239,47 @@ async function fetchTaskBoard() {
   }
 }
 
+function openCardModal(cardId) {
+  const c = (boardData.cards || []).find(x => x.id === cardId);
+  if (!c) return;
+  document.getElementById('editCardId').value = c.id;
+  document.getElementById('editTitle').value = c.title || '';
+  document.getElementById('editStatus').value = c.status || 'Backlog';
+  document.getElementById('editAssignee').value = c.assignee || '';
+  document.getElementById('editText').value = c.text || '';
+  document.getElementById('editSessionKey').value = c.sessionKey || '';
+  document.getElementById('editRunId').value = c.runId || '';
+  document.getElementById('editLink').value = (c.links && c.links[0]) || '';
+  document.getElementById('editAttachment').value = (c.attachments && c.attachments[0]) || '';
+  const m = document.getElementById('cardEditModal');
+  if (m) m.style.display = 'flex';
+}
+
+function closeCardModal() {
+  const m = document.getElementById('cardEditModal');
+  if (m) m.style.display = 'none';
+}
+
+async function saveCardModal() {
+  const id = document.getElementById('editCardId').value;
+  if (!id) return;
+  const body = {
+    title: document.getElementById('editTitle').value,
+    assignee: document.getElementById('editAssignee').value,
+    status: document.getElementById('editStatus').value,
+    text: document.getElementById('editText').value,
+    sessionKey: document.getElementById('editSessionKey').value,
+    runId: document.getElementById('editRunId').value,
+    links: document.getElementById('editLink').value ? [document.getElementById('editLink').value] : [],
+    attachments: document.getElementById('editAttachment').value ? [document.getElementById('editAttachment').value] : []
+  };
+  await authFetch(`${API_BASE}/api/task-board/cards/${encodeURIComponent(id)}/update`, { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
+  if (body.status) await moveCard(id, body.status);
+  closeCardModal();
+  await fetchTaskBoard();
+  showToast('Card updated', 'success');
+}
+
 function renderTaskBoard() {
   const root = document.getElementById('boardColumns');
   if (!root) return;
@@ -3120,8 +3289,11 @@ function renderTaskBoard() {
     const inCol = cards.filter(c => c.status === col);
     const html = inCol.map(c => `
       <div draggable="true" ondragstart="dragCardStart(event,'${c.id}')" style="background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:10px;margin-bottom:8px;cursor:grab;">
-        <div style="font-weight:600;font-size:13px;margin-bottom:6px;">${escapeHtml(c.title || '(untitled)')}</div>
-        <div style="font-size:12px;color:var(--text-muted);white-space:pre-wrap;max-height:100px;overflow:auto;">${escapeHtml(c.text || '')}</div>
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;">
+          <div style="font-weight:600;font-size:13px;margin-bottom:6px;cursor:pointer;" onclick="openCardModal('${c.id}')">${escapeHtml(c.title || '(untitled)')}</div>
+          <button class="qa-btn" onclick="openCardModal('${c.id}')">Edit</button>
+        </div>
+        <div style="font-size:12px;color:var(--text-muted);white-space:pre-wrap;max-height:140px;overflow:auto;">${escapeHtml(c.text || '')}</div>
         <div style="font-size:11px;color:var(--text-muted);margin-top:6px;">👤 ${escapeHtml(c.assignee || '-')} · ${escapeHtml(c.priority || 'normal')}</div>
         <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">🔗 ${escapeHtml(c.sessionKey || '-')} · 🧵 ${escapeHtml(c.runId || '-')}</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;">
@@ -3174,12 +3346,14 @@ async function createCard() {
   document.getElementById('cardRunId').value = '';
   document.getElementById('cardSessionKey').value = '';
   await fetchTaskBoard();
+  await fetchTaskActivity();
   showToast('Card created', 'success');
 }
 
 async function moveCard(cardId, status) {
   await authFetch(`${API_BASE}/api/task-board/cards/${encodeURIComponent(cardId)}/move`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status }) });
   await fetchTaskBoard();
+  await fetchTaskActivity();
 }
 
 async function controlCard(cardId, cmd) {
@@ -3187,6 +3361,7 @@ async function controlCard(cardId, cmd) {
   if (cmd === 'retry') errorLine = prompt('최근 에러 1줄(선택):', '') || '';
   await authFetch(`${API_BASE}/api/task-board/cards/${encodeURIComponent(cardId)}/control`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd, errorLine }) });
   await fetchTaskBoard();
+  await fetchTaskActivity();
   showToast(`Card ${cmd} sent`, 'info');
 }
 
@@ -4342,9 +4517,12 @@ async function fetchNewData() {
       const status = s.active === null ? 'N/A' : (s.active ? 'Running' : 'Stopped');
       const dotColor = s.active === null ? 'var(--text-muted)' : (s.active ? 'var(--green)' : 'var(--red)');
       const textColor = s.active === null ? 'var(--text-muted)' : (s.active ? 'var(--green)' : 'var(--red)');
-      return `<div style="display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:${border};">
+      return `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:${border};">
         <span style="width:10px;height:10px;border-radius:50%;background:${dotColor};flex-shrink:0;"></span>
-        <span style="font-weight:600;font-size:14px;">${s.name}</span>
+        <div>
+          <div style="font-weight:600;font-size:14px;">${s.name}</div>
+          <div style="font-size:10px;color:var(--text-muted);">${s.source || '-'}</div>
+        </div>
         <span style="margin-left:auto;font-size:12px;color:${textColor};">${status}</span>
       </div>`;
     }).join('') || '<div class="empty-state-text">No services</div>';
@@ -5252,10 +5430,14 @@ toggleSessionExpand = function(key, e) {
 initSidebarPin();
 fetchTailscaleStatus();
 fetchLifetimeStats();
+fetchAgentsOverview();
+fetchTaskActivity();
 
 // Periodic updates
 setInterval(fetchTailscaleStatus, 30000);
 setInterval(fetchLifetimeStats, 60000);
+setInterval(fetchAgentsOverview, 45000);
+setInterval(fetchTaskActivity, 12000);
 setInterval(updatePageTitle, 5000);
 setInterval(() => { if (costs.perDay) calculateStreak(); }, 10000);
 

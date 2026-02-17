@@ -462,6 +462,77 @@ function getSubagentSessionHints() {
     .slice(0, 30);
 }
 
+function getAgentsOverview() {
+  const now = Date.now();
+  const sessions = getSessionsJson();
+  const byAgent = new Map();
+
+  const parseAgent = (key) => {
+    const m = String(key || '').match(/^agent:([^:]+)/);
+    return m ? m[1] : 'unknown';
+  };
+
+  for (const s of sessions) {
+    const agent = parseAgent(s.key);
+    if (!byAgent.has(agent)) byAgent.set(agent, { agent, sessions: 0, active: 0, subagents: 0, totalTokens: 0, totalCost: 0, lastUpdatedAt: 0, lastMessage: '' });
+    const row = byAgent.get(agent);
+    row.sessions++;
+    row.totalTokens += s.totalTokens || 0;
+    row.totalCost += s.cost || 0;
+    if ((s.updatedAt || 0) > row.lastUpdatedAt) {
+      row.lastUpdatedAt = s.updatedAt || 0;
+      row.lastMessage = s.lastMessage || '';
+    }
+    if (String(s.key || '').includes('subagent')) row.subagents++;
+    if ((now - (s.updatedAt || 0)) < 5 * 60 * 1000) row.active++;
+  }
+
+  return Array.from(byAgent.values()).sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0));
+}
+
+function getTaskActivity() {
+  const now = Date.now();
+  const sessions = getSessionsJson();
+  const board = readTaskBoard();
+
+  const sessionActivities = sessions
+    .filter(s => {
+      const k = String(s.key || '');
+      return k.includes('subagent') || k.includes('cron') || k.includes(':group:') || (now - (s.updatedAt || 0) < 60 * 60 * 1000);
+    })
+    .slice(0, 120)
+    .map(s => {
+      const ageMs = now - (s.updatedAt || 0);
+      const status = ageMs < 3 * 60 * 1000 ? 'running' : ageMs < 30 * 60 * 1000 ? 'idle' : 'stale';
+      return {
+        id: s.sessionId || s.key,
+        type: String(s.key || '').includes('subagent') ? 'subagent' : String(s.key || '').includes('cron') ? 'cron' : 'session',
+        label: s.label,
+        key: s.key,
+        status,
+        updatedAt: s.updatedAt || 0,
+        ageMs,
+        model: s.model,
+        snippet: s.lastMessage || ''
+      };
+    });
+
+  const boardActivities = (board.cards || []).map(c => ({
+    id: c.id,
+    type: 'card',
+    label: c.title,
+    key: c.sessionKey || '',
+    runId: c.runId || '',
+    status: c.control?.state || (c.status === 'Done' ? 'done' : 'open'),
+    updatedAt: c.updatedAt || 0,
+    ageMs: now - (c.updatedAt || 0),
+    model: '-',
+    snippet: c.text || ''
+  }));
+
+  return { sessions: sessionActivities, cards: boardActivities };
+}
+
 function getCostData() {
   try {
     const files = fs.readdirSync(sessDir).filter(f => f.endsWith('.jsonl'));
@@ -1045,7 +1116,6 @@ function getGitActivity() {
 
 function getServicesStatus() {
   const { execSync } = require('child_process');
-  const services = ['openclaw', 'agent-dashboard', 'tailscaled'];
 
   function getPm2States() {
     try {
@@ -1064,17 +1134,50 @@ function getServicesStatus() {
     }
   }
 
-  if (os.platform() === 'linux') {
-    const pm2 = getPm2States();
-    return services.map(name => {
-      const n = name.toLowerCase();
-      if (pm2.has(n)) return { name, active: pm2.get(n), source: 'pm2' };
+  function checkSystemd(names) {
+    for (const name of names) {
       try {
         const status = execSync(`systemctl is-active ${name} 2>/dev/null`, { encoding: 'utf8', timeout: 3000 }).trim();
-        return { name, active: status === 'active', source: 'systemd' };
-      } catch {
-        return { name, active: false, source: pm2.size > 0 ? 'pm2/systemd' : 'systemd' };
+        if (status === 'active') return { active: true, source: `systemd:${name}` };
+      } catch {}
+    }
+    return { active: false, source: 'systemd' };
+  }
+
+  function checkOpenClawStatusJson() {
+    try {
+      const out = execSync('openclaw status --json 2>/dev/null', { encoding: 'utf8', timeout: 7000 });
+      const data = JSON.parse(out || '{}');
+      const running = !!(data?.gateway?.service?.running || data?.overview?.gatewayService?.running);
+      return { active: running, source: 'openclaw-status' };
+    } catch {
+      return null;
+    }
+  }
+
+  if (os.platform() === 'linux') {
+    const pm2 = getPm2States();
+    const aliases = {
+      openclaw: ['openclaw', 'openclaw-gateway', 'gateway'],
+      'agent-dashboard': ['agent-dashboard', 'openclaw-dashboard', 'dashboard'],
+      tailscaled: ['tailscaled']
+    };
+
+    const pick = (service) => {
+      const names = aliases[service] || [service];
+      for (const n of names) {
+        if (pm2.has(n)) return { active: pm2.get(n), source: `pm2:${n}` };
       }
+      if (service === 'openclaw') {
+        const oc = checkOpenClawStatusJson();
+        if (oc) return oc;
+      }
+      return checkSystemd(names);
+    };
+
+    return ['openclaw', 'agent-dashboard', 'tailscaled'].map(name => {
+      const result = pick(name);
+      return { name, active: result.active, source: result.source };
     });
   }
 
@@ -1109,18 +1212,16 @@ function getServicesStatus() {
       const label = cols.length >= 3 ? cols[cols.length - 1] : '';
       if (pid !== '-' && pid !== '0' && label) runningLabels.add(label.toLowerCase());
     }
-    const openclawActive = Array.from(runningLabels).some(label =>
-      label === 'openclaw' || label.includes('openclaw')
-    );
+    const openclawActive = Array.from(runningLabels).some(label => label === 'openclaw' || label.includes('openclaw'));
 
-    return services.map(name => {
-      if (name === 'agent-dashboard') return { name, active: agentDashboardActive };
-      if (name === 'tailscaled') return { name, active: tailscaledActive };
-      return { name, active: openclawActive };
-    });
+    return [
+      { name: 'openclaw', active: openclawActive, source: 'launchctl' },
+      { name: 'agent-dashboard', active: agentDashboardActive, source: 'http' },
+      { name: 'tailscaled', active: tailscaledActive, source: 'tailscale' }
+    ];
   }
 
-  return services.map(name => ({ name, active: null }));
+  return ['openclaw', 'agent-dashboard', 'tailscaled'].map(name => ({ name, active: null, source: 'unknown' }));
 }
 
 function getAgentWorkspaces() {
@@ -1831,6 +1932,16 @@ const server = http.createServer((req, res) => {
     if (req.url === '/api/subagents-active') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(getSubagentSessionHints()));
+      return;
+    }
+    if (req.url === '/api/agents-overview') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getAgentsOverview()));
+      return;
+    }
+    if (req.url === '/api/task-activity') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getTaskActivity()));
       return;
     }
     if (req.url === '/api/task-board/cards' && req.method === 'POST') {
