@@ -1652,7 +1652,7 @@ body.sidebar-pinned .main {
           <input id="cardRunId" class="search-box" placeholder="runId (optional)" style="max-width:none;" />
           <input id="cardAttachment" class="search-box" placeholder="Attachment path/url (optional)" style="max-width:none;" />
         </div>
-        <textarea id="cardText" class="search-box" placeholder="Text note (default)" style="max-width:none;min-height:180px;"></textarea>
+        <textarea id="cardText" class="search-box" placeholder="Text note (default)" style="width:100%;max-width:none;height:1000px;min-height:1000px;"></textarea>
         <div style="margin-top:10px;display:flex;gap:10px;align-items:center;">
           <button class="pause-btn" onclick="createCard()">+ Add Card</button>
         </div>
@@ -1933,7 +1933,12 @@ body.sidebar-pinned .main {
 
       <div class="grid grid-2 mb-24">
         <div class="card">
-          <h3 class="card-title">Memory Files</h3>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+            <h3 class="card-title" style="margin:0;flex:1;">Memory Files</h3>
+            <select id="memoryAgentFilter" onchange="fetchMemoryFiles()" style="padding:4px 8px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;font-size:11px;">
+              <option value="all">All agents</option>
+            </select>
+          </div>
           <div id="memoryFilesList" style="max-height:600px;overflow-y:auto;"></div>
         </div>
         <div class="card">
@@ -1953,6 +1958,9 @@ body.sidebar-pinned .main {
         <div class="card">
           <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
             <h3 class="card-title" style="margin-bottom:0;flex:1;">Key Files</h3>
+            <select id="filesAgentFilter" onchange="window.fetchKeyFiles()" style="padding:4px 8px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;font-size:11px;">
+              <option value="all">All agents</option>
+            </select>
             <button onclick="window.fetchKeyFiles()" style="padding:4px 10px;background:var(--bg-tertiary);color:var(--text-secondary);border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:pointer;">↻ Refresh</button>
           </div>
           <div id="keyFilesList" style="max-height:572px;overflow-y:auto;"></div>
@@ -1979,8 +1987,8 @@ body.sidebar-pinned .main {
       <div class="card mb-24" style="padding:16px 24px;">
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
           <select id="logService" style="padding:8px 12px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;font-size:14px;font-weight:500;">
-            <option value="openclaw">OpenClaw</option>
-            <option value="agent-dashboard">Agent Dashboard</option>
+            <option value="openclaw">OpenClaw Gateway</option>
+            <option value="agent-dashboard">Agent Dashboard (pm2)</option>
             <option value="tailscaled">Tailscaled</option>
           </select>
           <input type="number" id="logLines" value="100" min="10" max="1000" step="10" style="width:100px;padding:8px 12px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;font-size:14px;">
@@ -4626,6 +4634,13 @@ async function fetchMemoryFiles() {
   try {
     const res = await authFetch(API_BASE + '/api/memory-files');
     memoryFiles = await res.json();
+    const filter = document.getElementById('memoryAgentFilter');
+    if (filter) {
+      const agents = Array.from(new Set((memoryFiles || []).map(f => f.agent || 'main'))).sort();
+      const cur = filter.value || 'all';
+      filter.innerHTML = '<option value="all">All agents</option>' + agents.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+      filter.value = agents.includes(cur) ? cur : 'all';
+    }
     renderMemoryFilesList();
   } catch {}
 }
@@ -4634,7 +4649,9 @@ function renderMemoryFilesList() {
   const el = document.getElementById('memoryFilesList');
   if (!el) return;
   const now = Date.now();
-  el.innerHTML = memoryFiles.map(f => {
+  const filter = document.getElementById('memoryAgentFilter')?.value || 'all';
+  const rows = (memoryFiles || []).filter(f => filter === 'all' || (f.agent || 'main') === filter);
+  el.innerHTML = rows.map(f => {
     const age = now - f.modified;
     const ago = age < 60000 ? 'just now' : age < 3600000 ? Math.round(age/60000)+'m ago' : age < 86400000 ? Math.round(age/3600000)+'h ago' : Math.round(age/86400000)+'d ago';
     const sizeKb = (f.size / 1024).toFixed(1);
@@ -4644,7 +4661,7 @@ function renderMemoryFilesList() {
         <span style="font-size:18px;">${icon}</span>
         <span style="font-weight:600;font-size:13px;flex:1;">${f.name}</span>
       </div>
-      <div style="font-size:11px;color:var(--text-muted);">${sizeKb} KB · ${ago}</div>
+      <div style="font-size:11px;color:var(--text-muted);">${sizeKb} KB · ${ago} · agent:${escapeHtml(f.agent || 'main')}</div>
     </div>`;
   }).join('') || '<div class="empty-state-text">No memory files</div>';
 }
@@ -4680,6 +4697,13 @@ window.fetchKeyFiles = async function fetchKeyFiles() {
   try {
     const res = await authFetch(API_BASE + '/api/key-files');
     keyFiles = await res.json();
+    const filter = document.getElementById('filesAgentFilter');
+    if (filter) {
+      const agents = Array.from(new Set((keyFiles || []).map(f => f.agent || 'main'))).sort();
+      const cur = filter.value || 'all';
+      filter.innerHTML = '<option value="all">All agents</option>' + agents.map(a => `<option value="${escapeHtml(a)}">${escapeHtml(a)}</option>`).join('');
+      filter.value = agents.includes(cur) ? cur : 'all';
+    }
     renderKeyFilesList();
   } catch {}
 }
@@ -4688,7 +4712,9 @@ function renderKeyFilesList() {
   const el = document.getElementById('keyFilesList');
   if (!el) return;
   const now = Date.now();
-  el.innerHTML = keyFiles.map(f => {
+  const filter = document.getElementById('filesAgentFilter')?.value || 'all';
+  const rows = (keyFiles || []).filter(f => filter === 'all' || (f.agent || 'main') === filter);
+  el.innerHTML = rows.map(f => {
     const age = now - f.modified;
     const ago = age < 60000 ? 'just now' : age < 3600000 ? Math.round(age/60000)+'m ago' : age < 86400000 ? Math.round(age/3600000)+'h ago' : Math.round(age/86400000)+'d ago';
     const sizeKb = (f.size / 1024).toFixed(1);

@@ -472,6 +472,10 @@ function getAgentsOverview() {
     return m ? m[1] : 'unknown';
   };
 
+  for (const a of getKnownAgents()) {
+    byAgent.set(a, { agent: a, sessions: 0, active: 0, subagents: 0, totalTokens: 0, totalCost: 0, lastUpdatedAt: 0, lastMessage: '' });
+  }
+
   for (const s of sessions) {
     const agent = parseAgent(s.key);
     if (!byAgent.has(agent)) byAgent.set(agent, { agent, sessions: 0, active: 0, subagents: 0, totalTokens: 0, totalCost: 0, lastUpdatedAt: 0, lastMessage: '' });
@@ -1226,17 +1230,46 @@ function getServicesStatus() {
 
 function getAgentWorkspaces() {
   const roots = [];
-  const agentsWsDir = path.join(WORKSPACE_DIR, 'agents-ws');
+  const seen = new Set();
+  const candidates = [
+    path.join(WORKSPACE_DIR, 'agents-ws'),
+    path.join(path.dirname(WORKSPACE_DIR), 'agents-ws'),
+    path.join(path.dirname(path.dirname(WORKSPACE_DIR)), 'agents-ws'),
+    path.join(os.homedir(), '.openclaw', 'workspace', 'agents-ws')
+  ];
+
+  for (const agentsWsDir of candidates) {
+    try {
+      if (!fs.existsSync(agentsWsDir)) continue;
+      for (const agentId of fs.readdirSync(agentsWsDir)) {
+        const ws = path.join(agentsWsDir, agentId);
+        try {
+          if (!fs.statSync(ws).isDirectory()) continue;
+          const key = agentId + '::' + ws;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          roots.push({ agentId, ws });
+        } catch {}
+      }
+    } catch {}
+  }
+  return roots;
+}
+
+function getKnownAgents() {
+  const set = new Set();
   try {
-    if (!fs.existsSync(agentsWsDir)) return roots;
-    for (const agentId of fs.readdirSync(agentsWsDir)) {
-      const ws = path.join(agentsWsDir, agentId);
-      try {
-        if (fs.statSync(ws).isDirectory()) roots.push({ agentId, ws });
-      } catch {}
+    const agentsDir = path.join(OPENCLAW_DIR, 'agents');
+    if (fs.existsSync(agentsDir)) {
+      for (const id of fs.readdirSync(agentsDir)) {
+        const p = path.join(agentsDir, id);
+        try { if (fs.statSync(p).isDirectory()) set.add(id); } catch {}
+      }
     }
   } catch {}
-  return roots;
+  for (const { agentId } of getAgentWorkspaces()) set.add(agentId);
+  if (!set.size) set.add('main');
+  return Array.from(set).sort();
 }
 
 function getMemoryFiles() {
@@ -2167,21 +2200,59 @@ const server = http.createServer((req, res) => {
     if (req.url.startsWith('/api/logs?')) {
       try {
         const params = new URL(req.url, 'http://localhost').searchParams;
-        const allowedServices = ['openclaw', 'agent-dashboard', 'tailscaled', 'sshd', 'nginx'];
-        const service = params.get('service') || 'openclaw';
-        if (!allowedServices.includes(service)) {
+        const requested = params.get('service') || 'openclaw';
+        const allowedServices = ['openclaw', 'agent-dashboard', 'openclaw-dashboard', 'openclaw-gateway', 'tailscaled', 'sshd', 'nginx'];
+        if (!allowedServices.includes(requested)) {
           res.writeHead(400, { 'Content-Type': 'text/plain' });
           res.end('Invalid service name');
           return;
         }
         if (process.platform !== 'linux') {
           res.writeHead(200, { 'Content-Type': 'text/plain' });
-          res.end('Logs (journalctl) are only available on Linux.\nOn macOS use Console.app or: log show --predicate \'processImagePath contains "openclaw"\' --last 1h');
+          res.end('Logs are currently implemented for Linux host.');
           return;
         }
         const lines = Math.min(Math.max(parseInt(params.get('lines')) || 100, 1), 1000);
-        const { execSync } = require('child_process');
-        const logs = execSync(`journalctl -u ${service} --no-pager -n ${lines} -o short 2>/dev/null || echo "No logs available"`, { encoding: 'utf8', timeout: 10000 });
+        const unitAliases = {
+          openclaw: ['openclaw-gateway', 'openclaw'],
+          'agent-dashboard': ['openclaw-dashboard', 'agent-dashboard'],
+          'openclaw-dashboard': ['openclaw-dashboard', 'agent-dashboard'],
+          'openclaw-gateway': ['openclaw-gateway', 'openclaw'],
+          tailscaled: ['tailscaled'],
+          sshd: ['sshd'],
+          nginx: ['nginx']
+        };
+        const candidates = unitAliases[requested] || [requested];
+        let logs = '';
+        for (const unit of candidates) {
+          try {
+            logs = execSync(`journalctl -u ${unit} --no-pager -n ${lines} -o short 2>/dev/null`, { encoding: 'utf8', timeout: 10000 }).trim();
+            if (logs && !logs.includes('-- No entries --')) {
+              logs = `[source: journalctl -u ${unit}]\n` + logs;
+              break;
+            }
+            logs = '';
+          } catch {}
+        }
+        if (!logs && (requested === 'agent-dashboard' || requested === 'openclaw-dashboard')) {
+          try {
+            const outPath = path.join(os.homedir(), '.pm2', 'logs', 'openclaw-dashboard-out.log');
+            const errPath = path.join(os.homedir(), '.pm2', 'logs', 'openclaw-dashboard-error.log');
+            const tail = (p) => {
+              if (!fs.existsSync(p)) return '';
+              const txt = fs.readFileSync(p, 'utf8');
+              const arr = txt.split('\n');
+              return arr.slice(Math.max(0, arr.length - lines)).join('\n').trim();
+            };
+            const outTail = tail(outPath);
+            const errTail = tail(errPath);
+            const chunks = [];
+            if (outTail) chunks.push('[out]\n' + outTail);
+            if (errTail) chunks.push('[error]\n' + errTail);
+            if (chunks.length) logs = `[source: pm2 log files]\n` + chunks.join('\n\n');
+          } catch {}
+        }
+        if (!logs) logs = 'No logs available';
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end(logs);
       } catch (e) {
