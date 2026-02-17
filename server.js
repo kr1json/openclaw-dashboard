@@ -1148,7 +1148,7 @@ function getServicesStatus() {
     try {
       const out = execSync('openclaw status --json 2>/dev/null', { encoding: 'utf8', timeout: 7000 });
       const data = JSON.parse(out || '{}');
-      const running = !!(data?.gateway?.service?.running || data?.overview?.gatewayService?.running);
+      const running = !!(data?.gateway?.reachable || data?.gateway?.mode === 'local');
       return { active: running, source: 'openclaw-status' };
     } catch {
       return null;
