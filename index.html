@@ -1672,9 +1672,10 @@ body.sidebar-pinned .main {
             <select id="editStatus" class="search-box" style="max-width:none;"><option>Backlog</option><option>In Progress</option><option>Review</option><option>Done</option></select>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-            <input id="editSessionKey" class="search-box" placeholder="sessionKey" style="max-width:none;" />
+            <input id="editSessionKey" list="sessionKeyOptions" class="search-box" placeholder="sessionKey" style="max-width:none;" />
             <input id="editRunId" class="search-box" placeholder="runId" style="max-width:none;" />
           </div>
+          <datalist id="sessionKeyOptions"></datalist>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
             <input id="editLink" class="search-box" placeholder="Link" style="max-width:none;" />
             <input id="editAttachment" class="search-box" placeholder="Attachment" style="max-width:none;" />
@@ -1989,6 +1990,7 @@ body.sidebar-pinned .main {
           <select id="logService" style="padding:8px 12px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;font-size:14px;font-weight:500;">
             <option value="openclaw">OpenClaw Gateway</option>
             <option value="agent-dashboard">Agent Dashboard (pm2)</option>
+            <option value="openclaw-dashboard">OpenClaw Dashboard (pm2)</option>
             <option value="tailscaled">Tailscaled</option>
           </select>
           <input type="number" id="logLines" value="100" min="10" max="1000" step="10" style="width:100px;padding:8px 12px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:8px;font-size:14px;">
@@ -3079,6 +3081,7 @@ let notificationsEnabled = false;
 let boardData = { columns: ['Backlog','In Progress','Review','Done'], cards: [] };
 let agentsOverview = [];
 let taskActivity = { sessions: [], cards: [] };
+let subagentHints = [];
 const SIDEBAR_PIN_KEY = 'sidebarPinned';
 
 function setSidebarPinned(pinned) {
@@ -3159,13 +3162,37 @@ function formatAgo(ms) {
   return Math.round(ms / 86400000) + 'd ago';
 }
 
+function recommendSessionKeyForAgent(agentId) {
+  if (!agentId) return '';
+  const keyHint = (subagentHints || []).find(h => String(h.key || '').includes(`agent:${agentId}:`));
+  return keyHint ? keyHint.key : '';
+}
+
 function populateAgentSelects() {
   const ids = (agentsOverview || []).map(a => a.agent).filter(Boolean);
   const options = ['<option value="">Select agent</option>'].concat(ids.map(id => `<option value="${escapeHtml(id)}">${escapeHtml(id)}</option>`)).join('');
   const c = document.getElementById('cardAssignee');
-  if (c) c.innerHTML = options;
+  if (c) {
+    const prev = c.value;
+    c.innerHTML = options;
+    c.value = ids.includes(prev) ? prev : '';
+    c.onchange = () => {
+      const rec = recommendSessionKeyForAgent(c.value);
+      const sk = document.getElementById('cardSessionKey');
+      if (sk && rec) sk.value = rec;
+    };
+  }
   const e = document.getElementById('editAssignee');
-  if (e) e.innerHTML = options;
+  if (e) {
+    const prev = e.value;
+    e.innerHTML = options;
+    e.value = ids.includes(prev) ? prev : '';
+    e.onchange = () => {
+      const rec = recommendSessionKeyForAgent(e.value);
+      const sk = document.getElementById('editSessionKey');
+      if (sk && rec && !sk.value) sk.value = rec;
+    };
+  }
 }
 
 async function fetchAgentsOverview() {
@@ -3229,10 +3256,18 @@ async function fetchSubagentHints() {
   try {
     const res = await authFetch(API_BASE + '/api/subagents-active');
     const items = await res.json();
+    subagentHints = Array.isArray(items) ? items : [];
+
     const sel = document.getElementById('cardSessionKey');
-    if (!sel) return;
-    const first = '<option value="">Link active subagent session (optional)</option>';
-    sel.innerHTML = first + (items || []).map(x => `<option value="${escapeHtml(x.key)}">${escapeHtml(x.label || x.key)} · ${escapeHtml((x.key||'').slice(0,24))}</option>`).join('');
+    if (sel) {
+      const first = '<option value="">Link active subagent session (optional)</option>';
+      sel.innerHTML = first + subagentHints.map(x => `<option value="${escapeHtml(x.key)}">${escapeHtml(x.label || x.key)} · ${escapeHtml((x.key||'').slice(0,24))}</option>`).join('');
+    }
+
+    const dl = document.getElementById('sessionKeyOptions');
+    if (dl) {
+      dl.innerHTML = subagentHints.map(x => `<option value="${escapeHtml(x.key)}"></option>`).join('');
+    }
   } catch {}
 }
 
@@ -3255,7 +3290,8 @@ function openCardModal(cardId) {
   document.getElementById('editStatus').value = c.status || 'Backlog';
   document.getElementById('editAssignee').value = c.assignee || '';
   document.getElementById('editText').value = c.text || '';
-  document.getElementById('editSessionKey').value = c.sessionKey || '';
+  const rec = recommendSessionKeyForAgent(c.assignee || '');
+  document.getElementById('editSessionKey').value = c.sessionKey || rec || '';
   document.getElementById('editRunId').value = c.runId || '';
   document.getElementById('editLink').value = (c.links && c.links[0]) || '';
   document.getElementById('editAttachment').value = (c.attachments && c.attachments[0]) || '';
