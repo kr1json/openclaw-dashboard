@@ -1704,8 +1704,14 @@ body.sidebar-pinned .main {
           <div id="agentsOverviewTable" style="font-size:14px;"></div>
         </div>
         <div class="card">
-          <h3 class="card-title">Task / Subagent Activity</h3>
-          <div id="taskActivityList" style="max-height:420px;overflow:auto;font-size:14px;"></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+            <h3 class="card-title" style="margin:0;">Task / Subagent Activity</h3>
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);cursor:pointer;">
+              <input type="checkbox" id="showStaleCronToggle" onchange="setShowStaleCron(this.checked)">
+              Show stale cron
+            </label>
+          </div>
+          <div id="taskActivityList" style="max-height:420px;overflow:auto;font-size:14px;margin-top:10px;"></div>
         </div>
       </div>
       <div class="card mb-24">
@@ -3091,6 +3097,7 @@ let agentsOverview = [];
 let taskActivity = { sessions: [], cards: [] };
 let subagentHints = [];
 let selectedAgentId = '';
+let showStaleCron = false;
 const SIDEBAR_PIN_KEY = 'sidebarPinned';
 
 function setSidebarPinned(pinned) {
@@ -3224,7 +3231,10 @@ function renderAgentDetail() {
     return;
   }
   selectedAgentId = agent.agent;
-  const relSessions = (taskActivity.sessions || []).filter(s => String(s.key || '').includes(`agent:${agent.agent}:`)).slice(0, 30);
+  const relSessions = (taskActivity.sessions || [])
+    .filter(s => String(s.key || '').includes(`agent:${agent.agent}:`))
+    .filter(s => showStaleCron || !(s.type === 'cron' && s.status === 'stale'))
+    .slice(0, 30);
   const relCards = (taskActivity.cards || []).filter(c => (c.key || '').includes(`agent:${agent.agent}:`) || String(c.label || '').toLowerCase().includes(agent.agent.toLowerCase())).slice(0, 20);
   el.innerHTML = `
     <div style="display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:12px;margin-bottom:12px;">
@@ -3261,6 +3271,12 @@ function selectAgent(agentId) {
   renderAgentsOverview();
 }
 
+function setShowStaleCron(checked) {
+  showStaleCron = !!checked;
+  renderTaskActivity();
+  renderAgentDetail();
+}
+
 async function fetchTaskActivity() {
   try {
     const res = await authFetch(API_BASE + '/api/task-activity');
@@ -3274,9 +3290,13 @@ async function fetchTaskActivity() {
 function renderTaskActivity() {
   const el = document.getElementById('taskActivityList');
   if (!el) return;
+  const toggle = document.getElementById('showStaleCronToggle');
+  if (toggle) toggle.checked = !!showStaleCron;
+
   const list = []
     .concat((taskActivity.sessions || []).map(x => ({ ...x, bucket: 'session' })))
     .concat((taskActivity.cards || []).map(x => ({ ...x, bucket: 'card' })))
+    .filter(x => showStaleCron || !(x.type === 'cron' && x.status === 'stale'))
     .sort((a,b)=> (b.updatedAt||0) - (a.updatedAt||0))
     .slice(0, 120);
 

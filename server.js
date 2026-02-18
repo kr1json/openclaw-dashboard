@@ -498,12 +498,16 @@ function getTaskActivity() {
   const now = Date.now();
   const sessions = getSessionsJson();
   const board = readTaskBoard();
+  const CRON_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000; // keep activity view focused, hide old cron noise by default
 
   const sessionActivities = sessions
     .filter(s => {
       const k = String(s.key || '');
-      return k.includes('subagent') || k.includes('cron') || k.includes(':group:') || (now - (s.updatedAt || 0) < 60 * 60 * 1000);
+      const ageMs = now - (s.updatedAt || 0);
+      if (k.includes('cron')) return ageMs < CRON_ACTIVITY_WINDOW_MS;
+      return k.includes('subagent') || k.includes(':group:') || (ageMs < 60 * 60 * 1000);
     })
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
     .slice(0, 120)
     .map(s => {
       const ageMs = now - (s.updatedAt || 0);
