@@ -1711,6 +1711,13 @@ body.sidebar-pinned .main {
               Show stale cron
             </label>
           </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-top:8px;">
+            <div id="activityTypeFilters" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);cursor:pointer;">
+              <input type="checkbox" id="activityRunningOnlyToggle" onchange="setActivityRunningOnly(this.checked)">
+              Running only
+            </label>
+          </div>
           <div id="taskActivityList" style="max-height:420px;overflow:auto;font-size:14px;margin-top:10px;"></div>
         </div>
       </div>
@@ -3098,6 +3105,8 @@ let taskActivity = { sessions: [], cards: [] };
 let subagentHints = [];
 let selectedAgentId = '';
 let showStaleCron = false;
+let activityTypeFilter = 'all';
+let activityRunningOnly = false;
 const SIDEBAR_PIN_KEY = 'sidebarPinned';
 
 function setSidebarPinned(pinned) {
@@ -3277,6 +3286,28 @@ function setShowStaleCron(checked) {
   renderAgentDetail();
 }
 
+function setActivityTypeFilter(type) {
+  activityTypeFilter = type || 'all';
+  renderTaskActivity();
+}
+
+function setActivityRunningOnly(checked) {
+  activityRunningOnly = !!checked;
+  renderTaskActivity();
+}
+
+function renderActivityFilterChips() {
+  const wrap = document.getElementById('activityTypeFilters');
+  const runToggle = document.getElementById('activityRunningOnlyToggle');
+  if (runToggle) runToggle.checked = !!activityRunningOnly;
+  if (!wrap) return;
+  const types = ['all', 'card', 'subagent', 'session', 'cron'];
+  wrap.innerHTML = types.map(t => {
+    const active = activityTypeFilter === t;
+    return `<button onclick="setActivityTypeFilter('${t}')" style="padding:3px 10px;border-radius:999px;border:1px solid ${active ? 'var(--accent)' : 'var(--border)'};background:${active ? 'rgba(124,58,237,0.22)' : 'var(--bg-secondary)'};color:${active ? 'var(--text-primary)' : 'var(--text-muted)'};font-size:12px;cursor:pointer;">${t}</button>`;
+  }).join('');
+}
+
 async function fetchTaskActivity() {
   try {
     const res = await authFetch(API_BASE + '/api/task-activity');
@@ -3292,11 +3323,14 @@ function renderTaskActivity() {
   if (!el) return;
   const toggle = document.getElementById('showStaleCronToggle');
   if (toggle) toggle.checked = !!showStaleCron;
+  renderActivityFilterChips();
 
   const list = []
     .concat((taskActivity.sessions || []).map(x => ({ ...x, bucket: 'session' })))
     .concat((taskActivity.cards || []).map(x => ({ ...x, bucket: 'card' })))
     .filter(x => showStaleCron || !(x.type === 'cron' && x.status === 'stale'))
+    .filter(x => activityTypeFilter === 'all' || (x.type || x.bucket) === activityTypeFilter)
+    .filter(x => !activityRunningOnly || String(x.status || '') === 'running')
     .sort((a,b)=> (b.updatedAt||0) - (a.updatedAt||0))
     .slice(0, 120);
 
