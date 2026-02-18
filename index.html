@@ -1681,6 +1681,10 @@ body.sidebar-pinned .main {
             <input id="editAttachment" class="search-box" placeholder="Attachment" style="max-width:none;" />
           </div>
           <textarea id="editText" class="search-box" style="max-width:none;min-height:220px;" placeholder="Text note"></textarea>
+          <div style="margin-top:12px;">
+            <div style="font-size:12px;color:var(--text-muted);margin-bottom:6px;">Control Timeline (runId/sessionKey)</div>
+            <div id="cardControlTimeline" style="max-height:220px;overflow:auto;border:1px solid var(--border);border-radius:8px;padding:8px;background:var(--bg-primary);"></div>
+          </div>
           <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:10px;">
             <button class="qa-btn" onclick="closeCardModal()">Cancel</button>
             <button class="pause-btn" onclick="saveCardModal()">Save</button>
@@ -1697,12 +1701,16 @@ body.sidebar-pinned .main {
       <div class="grid grid-2 mb-24">
         <div class="card">
           <h3 class="card-title">Agent Overview</h3>
-          <div id="agentsOverviewTable"></div>
+          <div id="agentsOverviewTable" style="font-size:14px;"></div>
         </div>
         <div class="card">
           <h3 class="card-title">Task / Subagent Activity</h3>
-          <div id="taskActivityList" style="max-height:420px;overflow:auto;"></div>
+          <div id="taskActivityList" style="max-height:420px;overflow:auto;font-size:14px;"></div>
         </div>
+      </div>
+      <div class="card mb-24">
+        <h3 class="card-title">Selected Agent Detail</h3>
+        <div id="agentDetailPanel" style="font-size:14px;color:var(--text-secondary);">Select an agent from Agent Overview.</div>
       </div>
     </div>
 
@@ -3082,6 +3090,7 @@ let boardData = { columns: ['Backlog','In Progress','Review','Done'], cards: [] 
 let agentsOverview = [];
 let taskActivity = { sessions: [], cards: [] };
 let subagentHints = [];
+let selectedAgentId = '';
 const SIDEBAR_PIN_KEY = 'sidebarPinned';
 
 function setSidebarPinned(pinned) {
@@ -3206,12 +3215,37 @@ async function fetchAgentsOverview() {
   }
 }
 
+function renderAgentDetail() {
+  const el = document.getElementById('agentDetailPanel');
+  if (!el) return;
+  const agent = (agentsOverview || []).find(a => a.agent === selectedAgentId) || (agentsOverview || [])[0];
+  if (!agent) {
+    el.innerHTML = '<div class="empty-state-text">No agent selected</div>';
+    return;
+  }
+  selectedAgentId = agent.agent;
+  const relSessions = (taskActivity.sessions || []).filter(s => String(s.key || '').includes(`agent:${agent.agent}:`)).slice(0, 30);
+  const relCards = (taskActivity.cards || []).filter(c => (c.key || '').includes(`agent:${agent.agent}:`) || String(c.label || '').toLowerCase().includes(agent.agent.toLowerCase())).slice(0, 20);
+  el.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(120px,1fr));gap:12px;margin-bottom:12px;">
+      <div><div style="font-size:11px;color:var(--text-muted);">Agent</div><div style="font-size:18px;font-weight:700;color:var(--text-primary);">${escapeHtml(agent.agent)}</div></div>
+      <div><div style="font-size:11px;color:var(--text-muted);">Sessions</div><div style="font-size:18px;font-weight:700;color:var(--text-primary);">${agent.sessions||0}</div></div>
+      <div><div style="font-size:11px;color:var(--text-muted);">Active</div><div style="font-size:18px;font-weight:700;color:var(--green);">${agent.active||0}</div></div>
+      <div><div style="font-size:11px;color:var(--text-muted);">Subagents</div><div style="font-size:18px;font-weight:700;color:var(--cyan);">${agent.subagents||0}</div></div>
+    </div>
+    <div style="margin-bottom:8px;font-weight:600;color:var(--text-primary);">Recent Sessions (${relSessions.length})</div>
+    <div style="max-height:200px;overflow:auto;margin-bottom:12px;">${relSessions.map(s=>`<div style=\"padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;\"><div style=\"font-size:12px;font-weight:600;color:var(--text-primary);\">${escapeHtml(s.label||s.key||'-')}</div><div style=\"font-size:11px;color:var(--text-muted);\">${escapeHtml(s.status||'-')} · ${s.ageMs!=null?formatAgo(s.ageMs):'-'}</div></div>`).join('') || '<div style="color:var(--text-muted);font-size:12px;">No session activity</div>'}</div>
+    <div style="margin-bottom:8px;font-weight:600;color:var(--text-primary);">Related Cards (${relCards.length})</div>
+    <div style="max-height:180px;overflow:auto;">${relCards.map(c=>`<div style=\"padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;\"><div style=\"font-size:12px;font-weight:600;color:var(--text-primary);\">${escapeHtml(c.label||'-')}</div><div style=\"font-size:11px;color:var(--text-muted);\">${escapeHtml(c.status||'-')} · ${c.ageMs!=null?formatAgo(c.ageMs):'-'}</div></div>`).join('') || '<div style="color:var(--text-muted);font-size:12px;">No related cards</div>'}</div>
+  `;
+}
+
 function renderAgentsOverview() {
   const el = document.getElementById('agentsOverviewTable');
   if (!el) return;
   const rows = (agentsOverview || []).map(a => `
-    <div style="display:grid;grid-template-columns:140px 80px 70px 80px 1fr 90px;gap:8px;padding:8px 0;border-bottom:1px solid var(--border);font-size:12px;">
-      <div><b>${escapeHtml(a.agent)}</b></div>
+    <div onclick="selectAgent('${escapeHtml(a.agent)}')" style="display:grid;grid-template-columns:140px 80px 70px 80px 1fr 90px;gap:8px;padding:10px 0;border-bottom:1px solid var(--border);font-size:14px;cursor:pointer;${selectedAgentId===a.agent?'background:var(--bg-tertiary);':''}">
+      <div><b style="font-size:15px;">${escapeHtml(a.agent)}</b></div>
       <div>${a.sessions || 0} sess</div>
       <div>${a.active || 0} active</div>
       <div>${a.subagents || 0} sub</div>
@@ -3219,6 +3253,12 @@ function renderAgentsOverview() {
       <div style="color:var(--text-muted);">${a.lastUpdatedAt ? formatAgo(Date.now()-a.lastUpdatedAt) : '-'}</div>
     </div>`).join('');
   el.innerHTML = rows || '<div class="empty-state-text">No agents</div>';
+  renderAgentDetail();
+}
+
+function selectAgent(agentId) {
+  selectedAgentId = agentId;
+  renderAgentsOverview();
 }
 
 async function fetchTaskActivity() {
@@ -3282,6 +3322,31 @@ async function fetchTaskBoard() {
   }
 }
 
+async function loadCardControlTimeline(cardId) {
+  const el = document.getElementById('cardControlTimeline');
+  if (!el) return;
+  el.innerHTML = '<div style="color:var(--text-muted);font-size:12px;">Loading...</div>';
+  try {
+    const res = await authFetch(`${API_BASE}/api/task-board/cards/${encodeURIComponent(cardId)}/history`);
+    if (!res.ok) throw new Error('history fetch failed');
+    const data = await res.json();
+    const history = Array.isArray(data.history) ? data.history : [];
+    el.innerHTML = history.map(h => `
+      <div style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;margin-bottom:6px;">
+        <div style="display:flex;justify-content:space-between;gap:8px;">
+          <div style="font-size:12px;font-weight:600;color:var(--text-primary);">${escapeHtml(h.cmd || '-')} · runId:${escapeHtml(h.runId || '-')}</div>
+          <div style="font-size:11px;color:var(--text-muted);">${h.ts ? new Date(h.ts).toLocaleString() : '-'}</div>
+        </div>
+        <div style="font-size:11px;color:${h.dispatch?.ok ? 'var(--green)' : 'var(--red)'};margin-top:2px;">dispatch: ${h.dispatch?.ok ? 'ok' : 'fail'} ${escapeHtml(h.dispatch?.reason || '')}</div>
+        <div style="font-size:11px;color:var(--text-muted);margin-top:2px;">sessionKey: ${escapeHtml(h.sessionKey || '-')}</div>
+        ${h.errorLine ? `<div style=\"font-size:11px;color:var(--text-muted);margin-top:2px;\">error: ${escapeHtml(h.errorLine)}</div>` : ''}
+      </div>
+    `).join('') || '<div style="color:var(--text-muted);font-size:12px;">No control history</div>';
+  } catch (e) {
+    el.innerHTML = '<div style="color:var(--red);font-size:12px;">Failed to load timeline</div>';
+  }
+}
+
 function openCardModal(cardId) {
   const c = (boardData.cards || []).find(x => x.id === cardId);
   if (!c) return;
@@ -3297,6 +3362,7 @@ function openCardModal(cardId) {
   document.getElementById('editAttachment').value = (c.attachments && c.attachments[0]) || '';
   const m = document.getElementById('cardEditModal');
   if (m) m.style.display = 'flex';
+  loadCardControlTimeline(cardId);
 }
 
 function closeCardModal() {
@@ -3406,6 +3472,8 @@ async function controlCard(cardId, cmd) {
   await authFetch(`${API_BASE}/api/task-board/cards/${encodeURIComponent(cardId)}/control`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cmd, errorLine }) });
   await fetchTaskBoard();
   await fetchTaskActivity();
+  const openId = document.getElementById('editCardId')?.value;
+  if (openId && openId === cardId) loadCardControlTimeline(cardId);
   showToast(`Card ${cmd} sent`, 'info');
 }
 

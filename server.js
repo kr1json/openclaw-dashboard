@@ -2032,7 +2032,7 @@ const server = http.createServer((req, res) => {
           sessionKey: String(body.sessionKey || ''),
           runId: String(body.runId || ''),
           subagent: body.subagent || null,
-          control: { state: 'idle', lastAction: null, lastErrorLine: '' },
+          control: { state: 'idle', lastAction: null, lastErrorLine: '', history: [] },
           createdAt: now,
           updatedAt: now
         };
@@ -2046,6 +2046,24 @@ const server = http.createServer((req, res) => {
       });
       return;
     }
+    if (req.url.startsWith('/api/task-board/cards/') && req.method === 'GET') {
+      const hm = req.url.match(/^\/api\/task-board\/cards\/([^\/]+)\/history$/);
+      if (hm) {
+        const cardId = decodeURIComponent(hm[1]);
+        const board = readTaskBoard();
+        const card = board.cards.find(c => c.id === cardId);
+        if (!card) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'card not found' }));
+          return;
+        }
+        const history = Array.isArray(card.control?.history) ? card.control.history : [];
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ cardId, history }));
+        return;
+      }
+    }
+
     if (req.url.startsWith('/api/task-board/cards/') && req.method === 'POST') {
       const m = req.url.match(/^\/api\/task-board\/cards\/([^\/]+)\/(move|update|control)$/);
       if (m) {
@@ -2100,6 +2118,22 @@ const server = http.createServer((req, res) => {
               reason: dispatched.reason || null,
               error: dispatched.error || null
             };
+            card.control.history = Array.isArray(card.control.history) ? card.control.history : [];
+            card.control.history.unshift({
+              id: 'ctrl_' + crypto.randomBytes(4).toString('hex'),
+              ts: Date.now(),
+              cmd,
+              runId: card.runId || '',
+              sessionKey: card.sessionKey || '',
+              errorLine: line || '',
+              dispatch: {
+                ok: !!dispatched.ok,
+                reason: dispatched.reason || null,
+                error: dispatched.error || null,
+                sessionId: dispatched.sessionId || null
+              }
+            });
+            if (card.control.history.length > 50) card.control.history = card.control.history.slice(0, 50);
             if (dispatched.ok) {
               card.control.state = cmd === 'stop' ? 'stop-sent' : 'retry-sent';
             }
