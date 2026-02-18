@@ -1547,6 +1547,39 @@ function makeCardId() {
   return 'card_' + crypto.randomBytes(6).toString('hex');
 }
 
+function resolveSessionIdForKey(sessionKey) {
+  const list = getSessionsJson();
+  const hit = list.find(s => s.key === sessionKey || String(s.key || '').includes(sessionKey));
+  return hit?.sessionId || null;
+}
+
+function dispatchTaskControl(card, cmd, errorLine = '') {
+  try {
+    const { spawnSync } = require('child_process');
+    const sessionId = resolveSessionIdForKey(card.sessionKey || '');
+    if (!sessionId || sessionId === '-') return { ok: false, reason: 'session-not-found' };
+
+    const controlMessage = cmd === 'stop'
+      ? `[task-control] runId=${card.runId || '-'} STOP 요청입니다. 현재 작업을 즉시 중단하고 \"STOPPED\"로 짧게 응답하세요.`
+      : `[task-control] runId=${card.runId || '-'} RETRY 요청입니다. 직전 실패 원인: ${errorLine || 'unknown'}. 같은 목표를 재시도하고, 변경된 접근만 간단히 보고하세요.`;
+
+    const r = spawnSync('openclaw', [
+      'agent',
+      '--session-id', sessionId,
+      '--message', controlMessage,
+      '--timeout', '120',
+      '--json'
+    ], { encoding: 'utf8', timeout: 120000 });
+
+    if (r.error) return { ok: false, reason: 'dispatch-failed', error: String(r.error.message || r.error), sessionId };
+    if (r.status !== 0) return { ok: false, reason: 'dispatch-failed', error: (r.stderr || r.stdout || `exit ${r.status}`).slice(0, 1200), sessionId };
+
+    return { ok: true, sessionId, output: (r.stdout || '').slice(0, 8000) };
+  } catch (e) {
+    return { ok: false, reason: 'dispatch-failed', error: String(e?.message || e) };
+  }
+}
+
 function parseJsonBody(req, maxBytes = MAX_FILE_BODY) {
   return new Promise((resolve, reject) => {
     let body = '';
@@ -2052,13 +2085,23 @@ const server = http.createServer((req, res) => {
             }
             card.control = card.control || { state: 'idle', lastAction: null, lastErrorLine: '' };
             card.control.lastAction = cmd;
-            card.control.state = cmd === 'stop' ? 'stopped' : 'retrying';
+            card.control.state = cmd === 'stop' ? 'stop-requested' : 'retry-requested';
+            const line = String(body.errorLine || card.control.lastErrorLine || '').trim();
             if (cmd === 'retry') {
-              const line = String(body.errorLine || card.control.lastErrorLine || '').trim();
               card.control.lastErrorLine = line;
-              if (line && !card.text.includes('\n[retry-note]')) {
-                card.text += `\n[retry-note] 최근 에러: ${line}`;
-              }
+              if (line) card.text = (card.text || '') + `\n[retry-note] 최근 에러: ${line}`;
+            }
+
+            const dispatched = dispatchTaskControl(card, cmd, line);
+            card.control.lastDispatch = {
+              at: Date.now(),
+              ok: !!dispatched.ok,
+              sessionId: dispatched.sessionId || null,
+              reason: dispatched.reason || null,
+              error: dispatched.error || null
+            };
+            if (dispatched.ok) {
+              card.control.state = cmd === 'stop' ? 'stop-sent' : 'retry-sent';
             }
           }
           card.updatedAt = Date.now();
