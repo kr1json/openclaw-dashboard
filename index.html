@@ -1292,6 +1292,10 @@ body.sidebar-pinned .main {
         <span class="icon">🤖</span>
         <span class="nav-text">Sessions</span>
       </div>
+      <div class="nav-item" data-page="cron">
+        <span class="icon">⏱️</span>
+        <span class="nav-text">Cron</span>
+      </div>
       <div class="nav-item" data-page="board">
         <span class="icon">🗂️</span>
         <span class="nav-text">Board</span>
@@ -1631,6 +1635,19 @@ body.sidebar-pinned .main {
           <div class="sortable" data-sort="updated">Updated</div>
         </div>
         <div id="sessionsTableBody"></div>
+      </div>
+    </div>
+
+    <div class="page" id="cron">
+      <div class="page-header">
+        <h1 class="page-title">Cron Jobs</h1>
+        <p class="page-subtitle">Schedule, run history, and manual controls</p>
+      </div>
+      <div class="card mb-24" style="padding:16px 20px;">
+        <div id="cronSummary" style="display:flex;gap:24px;flex-wrap:wrap;"></div>
+      </div>
+      <div class="card">
+        <div id="cronJobsPage"></div>
       </div>
     </div>
 
@@ -4660,6 +4677,43 @@ function renderHealthSparklines() {
   renderSparkline('ramSparkline', 'ram', 'var(--blue)');
 }
 
+function renderCronJobs(crons = []) {
+  const now = Date.now();
+  const rowsHtml = crons.map(c => {
+    const statusIcon = c.lastStatus === 'ok' ? '✅' : c.lastStatus === 'unknown' ? '⚪' : '❌';
+    const nextAgo = c.nextRunAt > now ? formatTimeAgo(c.nextRunAt - now, true) : '--';
+    const lastAgo = c.lastRunAt > 0 ? formatTimeAgo(now - c.lastRunAt, false) + ' ago' : '--';
+    const toggleColor = c.enabled ? 'var(--green)' : 'var(--text-muted)';
+    const toggleBg = c.enabled ? 'rgba(16,185,129,0.2)' : 'var(--bg-tertiary)';
+    return `<div style="padding:10px 0;border-bottom:1px solid var(--border);">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;">
+        <span style="font-weight:600;font-size:13px;flex:1;">${statusIcon} ${c.name}</span>
+        <button onclick="window.toggleCronJob('${c.id}')" style="padding:2px 8px;background:${toggleBg};color:${toggleColor};border:1px solid var(--border);border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;margin-right:4px;">${c.enabled ? 'ON' : 'OFF'}</button>
+        <button onclick="window.runCronJob('${c.id}')" style="padding:2px 8px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;font-size:10px;cursor:pointer;">▶ Run</button>
+      </div>
+      <div class="mono" style="font-size:11px;color:var(--text-muted);">${c.schedule || '--'}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Next: ${c.enabled ? nextAgo : 'disabled'} · Last run: ${lastAgo} · Duration: ${c.lastDuration ? (c.lastDuration / 1000).toFixed(1) + 's' : '--'}</div>
+    </div>`;
+  }).join('') || '<div class="empty-state-text">No cron jobs</div>';
+
+  const overviewEl = document.getElementById('cronJobs');
+  if (overviewEl) overviewEl.innerHTML = rowsHtml;
+
+  const pageEl = document.getElementById('cronJobsPage');
+  if (pageEl) pageEl.innerHTML = rowsHtml;
+
+  const summaryEl = document.getElementById('cronSummary');
+  if (summaryEl) {
+    const enabled = crons.filter(c => c.enabled).length;
+    const failed = crons.filter(c => c.lastStatus && c.lastStatus !== 'ok' && c.lastStatus !== 'unknown').length;
+    summaryEl.innerHTML = `
+      <div><div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;">Total Jobs</div><div class="mono" style="font-size:24px;font-weight:700;">${crons.length}</div></div>
+      <div><div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;">Enabled</div><div class="mono" style="font-size:24px;font-weight:700;color:var(--green);">${enabled}</div></div>
+      <div><div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;">Recent Failures</div><div class="mono" style="font-size:24px;font-weight:700;color:${failed ? 'var(--red)' : 'var(--text-primary)'};">${failed}</div></div>
+    `;
+  }
+}
+
 async function fetchNewData() {
   try {
     const [cronsRes, gitRes, svcRes, memRes, tokRes, rtRes] = await Promise.all([
@@ -4694,21 +4748,7 @@ async function fetchNewData() {
     }).join('') || '<div class="empty-state-text">No services</div>';
 
     const now = Date.now();
-    document.getElementById('cronJobs').innerHTML = crons.map(c => {
-      const statusIcon = c.lastStatus === 'ok' ? '✅' : c.lastStatus === 'unknown' ? '⚪' : '❌';
-      const nextAgo = c.nextRunAt > now ? formatTimeAgo(c.nextRunAt - now, true) : '--';
-      const toggleColor = c.enabled ? 'var(--green)' : 'var(--text-muted)';
-      const toggleBg = c.enabled ? 'rgba(16,185,129,0.2)' : 'var(--bg-tertiary)';
-      return `<div style="padding:10px 0;border-bottom:1px solid var(--border);">
-        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
-          <span style="font-weight:600;font-size:13px;flex:1;">${statusIcon} ${c.name}</span>
-          <button onclick="window.toggleCronJob('${c.id}')" style="padding:2px 8px;background:${toggleBg};color:${toggleColor};border:1px solid var(--border);border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;margin-right:4px;">${c.enabled ? 'ON' : 'OFF'}</button>
-          <button onclick="window.runCronJob('${c.id}')" style="padding:2px 8px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;font-size:10px;cursor:pointer;">▶</button>
-        </div>
-        <span class="mono" style="font-size:11px;color:var(--text-muted);">${c.schedule}</span>
-        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Next: ${c.enabled ? nextAgo : 'disabled'} · Last: ${c.lastDuration ? (c.lastDuration / 1000).toFixed(0) + 's' : '--'}</div>
-      </div>`;
-    }).join('') || '<div class="empty-state-text">No cron jobs</div>';
+    renderCronJobs(crons);
 
 // Cron management
 window.toggleCronJob = async function(id) {

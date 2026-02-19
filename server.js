@@ -6,6 +6,7 @@ const path = require('path');
 const os = require('os');
 const { exec } = require('child_process');
 const crypto = require('crypto');
+const { toCronViewModel } = require('./cron-utils');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT || '7000');
 const OPENCLAW_DIR = process.env.OPENCLAW_DIR || path.join(os.homedir(), '.openclaw');
@@ -1122,31 +1123,7 @@ function getCronJobs() {
   try {
     if (!fs.existsSync(cronFile)) return [];
     const data = JSON.parse(fs.readFileSync(cronFile, 'utf8'));
-    return (data.jobs || []).map(j => {
-      let humanSchedule = j.schedule?.expr || '';
-      try {
-        const parts = humanSchedule.split(' ');
-        if (parts.length === 5) {
-          const [min, hour, dom, mon, dow] = parts;
-          const dowNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-          let readable = '';
-          if (dow !== '*') readable = dowNames[parseInt(dow)] || dow;
-          if (hour !== '*' && min !== '*') readable += (readable ? ' ' : '') + `${hour.padStart(2,'0')}:${min.padStart(2,'0')}`;
-          if (j.schedule?.tz) readable += ` (${j.schedule.tz.split('/').pop()})`;
-          if (readable) humanSchedule = readable;
-        }
-      } catch {}
-      return {
-        id: j.id,
-        name: j.name || j.id.substring(0, 8),
-        schedule: humanSchedule,
-        enabled: j.enabled !== false,
-        lastStatus: j.state?.lastStatus || 'unknown',
-        lastRunAt: j.state?.lastRunAtMs || 0,
-        nextRunAt: j.state?.nextRunAtMs || 0,
-        lastDuration: j.state?.lastDurationMs || 0
-      };
-    });
+    return (data.jobs || []).map(toCronViewModel);
   } catch { return []; }
 }
 
