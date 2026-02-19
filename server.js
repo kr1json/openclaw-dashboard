@@ -27,7 +27,9 @@ const configFiles = [
 ];
 const workspaceFilenames = ['AGENTS.md','HEARTBEAT.md','IDENTITY.md','MEMORY.md','SOUL.md','TOOLS.md','USER.md'];
 const claudeUsageFile = path.join(dataDir, 'claude-usage.json');
+const geminiUsageFile = path.join(dataDir, 'gemini-usage.json');
 const scrapeScript = path.join(WORKSPACE_DIR, 'scripts', 'scrape-claude-usage.sh');
+const geminiScrapeScript = path.join(WORKSPACE_DIR, 'scripts', 'scrape-gemini-usage.sh');
 
 const htmlPath = path.join(__dirname, 'index.html');
 
@@ -1813,6 +1815,26 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify(data));
       } catch {
         res.end(JSON.stringify({ error: 'No usage data. Run scrape-claude-usage.sh first.' }));
+      }
+      return;
+    }
+    if (req.url === '/api/gemini-usage-scrape' && req.method === 'POST') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (fs.existsSync(geminiScrapeScript)) {
+        exec(`bash ${geminiScrapeScript}`, { timeout: 60000 }, (err) => {});
+        res.end(JSON.stringify({ status: 'started' }));
+      } else {
+        res.end(JSON.stringify({ status: 'error', message: 'Gemini scrape script not found' }));
+      }
+      return;
+    }
+    if (req.url === '/api/gemini-usage') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      try {
+        const data = JSON.parse(fs.readFileSync(geminiUsageFile, 'utf8'));
+        res.end(JSON.stringify(data));
+      } catch {
+        res.end(JSON.stringify({ error: 'No usage data. Run scrape-gemini-usage.sh first.' }));
       }
       return;
     }

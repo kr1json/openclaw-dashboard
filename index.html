@@ -1322,7 +1322,7 @@ body {
             <div style="display:flex;align-items:center;gap:8px;">
               <div class="metric-value" id="ovSessionPct">--%</div>
               <span id="overviewUsageWarn" style="font-size:20px;display:none;">⚠️</span>
-              <button onclick="scrapeClaudeUsage()" id="overviewScrapeBtn" title="Refresh now" style="padding:2px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-secondary);cursor:pointer;font-size:11px;line-height:1;">⟳</button>
+              <button onclick="scrapeCurrentProvider()" id="overviewScrapeBtn" title="Refresh now" style="padding:2px 8px;border-radius:4px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-secondary);cursor:pointer;font-size:11px;line-height:1;">⟳</button>
               <div style="display:flex;align-items:center;gap:6px;">
                 <label style="position:relative;display:inline-block;width:36px;height:20px;cursor:pointer;border:1px solid rgba(255,255,255,0.3);border-radius:11px;padding:1px;" title="Auto-refresh usage every 2 min">
                   <input type="checkbox" id="usageAutoRefresh" onchange="toggleUsageAutoRefresh(this.checked)" style="opacity:0;width:0;height:0;">
@@ -1331,8 +1331,15 @@ body {
                 </label>
                 <span style="font-size:10px;color:var(--text-muted);" id="usageAutoLabel">Auto</span>
               </div>
+              <div style="display:flex;background:var(--bg-primary);border-radius:6px;overflow:hidden;border:1px solid var(--border);margin-left:4px;" id="providerSwitch">
+                <button onclick="switchProvider('claude')" id="provBtnClaude" style="padding:2px 10px;font-size:10px;font-weight:600;border:none;cursor:pointer;transition:0.2s;background:var(--accent);color:#fff;">Claude</button>
+                <button onclick="switchProvider('gemini')" id="provBtnGemini" style="padding:2px 10px;font-size:10px;font-weight:600;border:none;cursor:pointer;transition:0.2s;background:transparent;color:var(--text-muted);">Gemini</button>
+              </div>
             </div>
-            <div class="metric-label" id="overviewUsageLabel">5h Session</div>
+            <div style="display:flex;align-items:center;gap:8px;margin-top:6px;">
+              <select id="modelSelect" onchange="switchModel(this.value)" style="background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;padding:2px 8px;font-size:11px;font-family:'JetBrains Mono',monospace;cursor:pointer;outline:none;"></select>
+              <span class="metric-label" id="overviewUsageLabel" style="font-size:11px;"></span>
+            </div>
             <div style="height:8px;background:var(--bg-primary);border-radius:4px;overflow:hidden;margin-top:8px;">
               <div id="overviewSessionBar" style="height:100%;border-radius:4px;width:0%;background:var(--green);transition:width 0.6s cubic-bezier(0.4,0,0.2,1);"></div>
             </div>
@@ -1639,6 +1646,17 @@ body {
             <div style="font-size:11px;color:var(--text-muted);margin-top:4px;" id="cuSonnetReset"></div>
           </div>
         </div>
+      </div>
+
+      <div class="card mb-24">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+          <h3 class="card-title" style="margin:0;">Gemini Usage (Google)</h3>
+          <div style="display:flex;align-items:center;gap:12px;">
+            <span style="font-size:11px;color:var(--text-muted);" id="geminiUsageScrapedAt">Not scraped yet</span>
+            <button onclick="scrapeGeminiUsage()" style="padding:4px 12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-secondary);color:var(--text-primary);cursor:pointer;font-size:12px;" id="geminiScrapeBtn">⟳ Refresh</button>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:20px;" id="geminiUsageBars"></div>
       </div>
 
       <div class="grid grid-4 mb-24">
@@ -3076,34 +3094,18 @@ function updateOverview() {
   animateValue(todayEl, costs.today || 0);
   
   const opusLimitsKey = Object.keys((usage.fiveHour && usage.fiveHour.perModel) || {}).find(k => k.includes('opus')) || '';
-  // Overview usage card: 5h session only
+  // Overview usage card: delegate to provider-specific updater
   try {
-    const cuRes = _cachedClaudeUsage;
-    const cu = cuRes;
-    let sPct = 0;
-    if (cu.session) {
-      sPct = cu.session.percent;
-    } else {
-      const opusDataOv = opusLimitsKey ? usage.fiveHour.perModel[opusLimitsKey] : { output: 0 };
-      const opusLimit = (usage.estimatedLimits && usage.estimatedLimits.opus) || 88000;
-      sPct = Math.min(Math.round((opusDataOv.output / opusLimit) * 100), 100);
-    }
-    const sEl = document.getElementById('ovSessionPct');
-    if (sEl) { sEl.dataset.format = 'percent'; animateValue(sEl, sPct); }
-    const sBar = document.getElementById('overviewSessionBar');
-    if (sBar) { sBar.style.width = sPct + '%'; sBar.style.background = sPct < 50 ? 'var(--green)' : sPct < 80 ? 'var(--yellow)' : 'var(--red)'; }
-    const warnIcon = document.getElementById('overviewUsageWarn');
-    if (warnIcon) warnIcon.style.display = sPct > 70 ? 'inline' : 'none';
-    
-    // Notification for high usage
+    if (_currentProvider === 'claude') updateOverviewClaude();
+    else updateOverviewGemini();
+    const cu = _cachedClaudeUsage;
+    const sPct = (cu && cu.session) ? cu.session.percent : 0;
     if (sPct >= 80 && !window._usageNotified) {
-      sendNotification('High Usage Warning', `5h session usage at ${sPct}%`);
+      sendNotification('High Usage Warning', `Claude session usage at ${sPct}%`);
       window._usageNotified = true;
     } else if (sPct < 70) {
       window._usageNotified = false;
     }
-    const label = document.getElementById('overviewUsageLabel');
-    if (label) label.textContent = '5h Session';
   } catch {}
   
   if (systemStats.cpu) {
@@ -3572,8 +3574,8 @@ function toggleUsageAutoRefresh(on, init) {
     label.textContent = 'Auto ✓';
     label.style.color = 'var(--green)';
     // Scrape immediately, then every 30 min
-    scrapeClaudeUsage();
-    _usageAutoInterval = setInterval(scrapeClaudeUsage, 120000);
+    scrapeCurrentProvider();
+    _usageAutoInterval = setInterval(scrapeCurrentProvider, 120000);
   } else {
     track.style.background = 'var(--bg-tertiary)';
     thumb.style.left = '2px';
@@ -3610,6 +3612,178 @@ async function scrapeClaudeUsage() {
 
 fetchClaudeUsage();
 setInterval(fetchClaudeUsage, 60000);
+
+let _cachedGeminiUsage = null;
+let _currentProvider = localStorage.getItem('usageProvider') || 'claude';
+
+async function fetchGeminiUsage() {
+  try {
+    const r = await authFetch(API_BASE + '/api/gemini-usage');
+    const d = await r.json();
+    if (d.error) return;
+    _cachedGeminiUsage = d;
+    const container = document.getElementById('geminiUsageBars');
+    if (container && d.models) {
+      container.innerHTML = '';
+      for (const [name, info] of Object.entries(d.models)) {
+        const used = parseFloat(info.used_percent) || 0;
+        const resets = String(info.resets_in || '').replace(/[<>&"']/g, '');
+        const safeName = String(name).replace(/[<>&"']/g, '');
+        const color = getProgressColor(used);
+        container.innerHTML += '<div>' +
+          '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;">' +
+          '<span style="font-weight:600;font-size:14px;">' + safeName + '</span>' +
+          '<span class="mono" style="font-size:12px;color:var(--text-secondary);">' + used + '% used</span>' +
+          '</div>' +
+          '<div style="height:24px;background:var(--bg-primary);border-radius:12px;overflow:hidden;position:relative;">' +
+          '<div style="height:100%;border-radius:12px;transition:width 0.6s;width:' + used + '%;background:' + color + ';"></div>' +
+          '<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-family:\'JetBrains Mono\',monospace;font-size:11px;font-weight:700;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,0.5);">' + used + '%</div>' +
+          '</div>' +
+          '<div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Resets in ' + resets + '</div>' +
+          '</div>';
+      }
+    }
+    const ts = document.getElementById('geminiUsageScrapedAt');
+    if (ts && d.scraped_at) {
+      const ago = Math.round((Date.now() - new Date(d.scraped_at).getTime()) / 60000);
+      ts.textContent = ago < 1 ? 'Just now' : ago + 'm ago';
+    }
+    if (_currentProvider === 'gemini') updateOverviewGemini();
+  } catch {}
+}
+
+async function scrapeGeminiUsage() {
+  const btn = document.getElementById('geminiScrapeBtn');
+  const btn2 = document.getElementById('overviewScrapeBtn');
+  const label = document.getElementById('usageAutoLabel');
+  if (btn) { btn.textContent = '⏳ Refreshing...'; btn.disabled = true; }
+  if (btn2) { btn2.textContent = '⏳'; btn2.disabled = true; }
+  if (label && _usageAutoInterval) label.textContent = '⏳...';
+  try {
+    await authFetch(API_BASE + '/api/gemini-usage-scrape', { method: 'POST' });
+    const oldTs = (_cachedGeminiUsage && _cachedGeminiUsage.scraped_at) || '';
+    for (let i = 0; i < 12; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      await fetchGeminiUsage();
+      if (_cachedGeminiUsage && _cachedGeminiUsage.scraped_at && _cachedGeminiUsage.scraped_at !== oldTs) break;
+    }
+    showToast('Gemini usage refreshed', 'success');
+  } catch {} finally {
+    if (btn) { btn.textContent = '⟳ Refresh'; btn.disabled = false; }
+    if (btn2) { btn2.textContent = '⟳'; btn2.disabled = false; }
+    if (label && _usageAutoInterval) label.textContent = 'Auto ✓';
+  }
+}
+
+let _currentModel = localStorage.getItem('usageModel') || 'session';
+
+const _claudeModels = [
+  { value: 'session', label: '5h Session' },
+  { value: 'weekly_all', label: 'Weekly (All)' },
+  { value: 'weekly_sonnet', label: 'Weekly (Sonnet)' }
+];
+
+function _getGeminiModelOptions() {
+  if (!_cachedGeminiUsage || !_cachedGeminiUsage.models) return [];
+  return Object.keys(_cachedGeminiUsage.models)
+    .filter(k => /^[\w.\-]+$/.test(k))
+    .map(k => ({ value: k, label: k }));
+}
+
+function _populateModelSelect() {
+  const sel = document.getElementById('modelSelect');
+  if (!sel) return;
+  const opts = _currentProvider === 'claude' ? _claudeModels : _getGeminiModelOptions();
+  sel.innerHTML = '';
+  opts.forEach(o => {
+    const opt = document.createElement('option');
+    opt.value = o.value;
+    opt.textContent = o.label;
+    sel.appendChild(opt);
+  });
+  if (opts.some(o => o.value === _currentModel)) {
+    sel.value = _currentModel;
+  } else if (opts.length) {
+    _currentModel = opts[0].value;
+    sel.value = _currentModel;
+  }
+}
+
+function _setOverviewBar(pct, label) {
+  pct = parseFloat(pct) || 0;
+  const pctEl = document.getElementById('ovSessionPct');
+  const barEl = document.getElementById('overviewSessionBar');
+  const labelEl = document.getElementById('overviewUsageLabel');
+  const warnEl = document.getElementById('overviewUsageWarn');
+  if (pctEl) pctEl.textContent = pct + '%';
+  if (barEl) { barEl.style.width = Math.min(pct, 100) + '%'; barEl.style.background = pct < 50 ? 'var(--green)' : pct < 80 ? '#f59e0b' : '#ef4444'; }
+  if (labelEl) labelEl.textContent = String(label || '').replace(/[<>&]/g, '');
+  if (warnEl) warnEl.style.display = pct >= 80 ? '' : 'none';
+}
+
+function updateOverviewGemini() {
+  _populateModelSelect();
+  if (!_cachedGeminiUsage || !_cachedGeminiUsage.models) return;
+  const model = _cachedGeminiUsage.models[_currentModel];
+  if (!model) {
+    const first = Object.keys(_cachedGeminiUsage.models)[0];
+    if (first) {
+      _currentModel = first;
+      const sel = document.getElementById('modelSelect');
+      if (sel) sel.value = first;
+      _setOverviewBar(_cachedGeminiUsage.models[first].used_percent, 'Resets in ' + _cachedGeminiUsage.models[first].resets_in);
+    }
+    return;
+  }
+  _setOverviewBar(model.used_percent, 'Resets in ' + model.resets_in);
+}
+
+function updateOverviewClaude() {
+  _populateModelSelect();
+  if (!_cachedClaudeUsage) return;
+  const keyMap = { session: 'session', weekly_all: 'weekly_all', weekly_sonnet: 'weekly_sonnet' };
+  const d = _cachedClaudeUsage[keyMap[_currentModel] || 'session'];
+  if (!d) return;
+  _setOverviewBar(d.percent, d.resets ? 'Resets ' + d.resets : '');
+}
+
+function switchModel(val) {
+  _currentModel = val;
+  localStorage.setItem(_currentProvider === 'claude' ? 'claudeModel' : 'geminiModel', val);
+  if (_currentProvider === 'claude') updateOverviewClaude();
+  else updateOverviewGemini();
+}
+
+function switchProvider(prov) {
+  _currentProvider = prov;
+  localStorage.setItem('usageProvider', prov);
+  const cBtn = document.getElementById('provBtnClaude');
+  const gBtn = document.getElementById('provBtnGemini');
+  if (prov === 'claude') {
+    if (cBtn) { cBtn.style.background = 'var(--accent)'; cBtn.style.color = '#fff'; }
+    if (gBtn) { gBtn.style.background = 'transparent'; gBtn.style.color = 'var(--text-muted)'; }
+    _currentModel = localStorage.getItem('claudeModel') || 'session';
+    updateOverviewClaude();
+  } else {
+    if (gBtn) { gBtn.style.background = '#4285f4'; gBtn.style.color = '#fff'; }
+    if (cBtn) { cBtn.style.background = 'transparent'; cBtn.style.color = 'var(--text-muted)'; }
+    _currentModel = localStorage.getItem('geminiModel') || 'gemini-3-pro-preview';
+    updateOverviewGemini();
+  }
+  if (_usageAutoInterval) {
+    clearInterval(_usageAutoInterval);
+    _usageAutoInterval = setInterval(scrapeCurrentProvider, 120000);
+  }
+}
+
+function scrapeCurrentProvider() {
+  if (_currentProvider === 'gemini') scrapeGeminiUsage();
+  else scrapeClaudeUsage();
+}
+
+fetchGeminiUsage();
+setInterval(fetchGeminiUsage, 60000);
+switchProvider(_currentProvider);
 
 function getProgressColor(pct) {
   if (pct < 50) return 'linear-gradient(90deg, #10b981, #34d399)';
