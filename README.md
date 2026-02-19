@@ -21,7 +21,7 @@ A beautiful, secure, real-time monitoring dashboard for OpenClaw agents. Track s
 ## ✨ Features
 
 - 🤖 **Session Management** - View all agent sessions with real-time activity status
-- 📊 **Rate Limit Monitoring** - Track Claude API usage against 5-hour rolling windows
+- 📊 **Rate Limit Monitoring** - Track Claude and Gemini API usage against rolling windows
 - 💰 **Cost Analysis** - Detailed spending breakdowns by model, session, and time period
 - ⚡ **Live Feed** - Real-time stream of agent messages across all sessions
 - 🧠 **Memory Viewer** - Browse and read agent memory files (MEMORY.md, HEARTBEAT.md, daily notes)
@@ -41,6 +41,9 @@ A beautiful, secure, real-time monitoring dashboard for OpenClaw agents. Track s
 - 📊 **Timeline View** - Visual timeline of session activity
 - 💾 **Git Activity** - Track recent commits across your repos
 - 🎛️ **Claude Usage Scraper** - Fetch real usage data from Claude Code CLI
+- 🔷 **Gemini Usage Tracking** - Monitor Google Gemini model usage with per-model breakdowns
+- 🔀 **Provider Switching** - Toggle between Claude and Gemini usage on the overview card
+- 📊 **Per-Model Selector** - Choose which model/window to display (Opus, Sonnet, Pro, Flash, etc.)
 - 🔄 **Auto-Refresh** - Live data updates every 5 seconds
 - 🌟 **Lifetime Stats** - Total tokens, messages, cost since first session
 - 📈 **Health History** - 24-hour CPU & RAM sparklines
@@ -468,8 +471,10 @@ All other endpoints require authentication:
 - `POST /api/cron/<id>/run` — Manually trigger a cron job
 - `GET /api/logs?service=<service>&lines=<N>` — Fetch system logs
 - `POST /api/action/<action>` — Run quick actions (restart-openclaw, restart-dashboard, etc.)
-- `POST /api/claude-usage-scrape` — Trigger usage scrape
-- `GET /api/claude-usage` — Get last scraped usage
+- `POST /api/claude-usage-scrape` — Trigger Claude usage scrape
+- `GET /api/claude-usage` — Get last scraped Claude usage
+- `POST /api/gemini-usage-scrape` — Trigger Gemini usage scrape
+- `GET /api/gemini-usage` — Get last scraped Gemini usage
 - `GET /api/live` — Server-Sent Events stream of real-time messages
 
 For detailed request/response examples, see the previous version of this README or explore the API in the browser's Network tab.
@@ -484,6 +489,7 @@ The dashboard stores data in your workspace directory:
 | `data/audit.log` | Security audit trail (auto-rotates at 10MB) |
 | `data/health-history.json` | CPU/RAM history for sparklines |
 | `data/claude-usage.json` | Last scraped Claude usage data |
+| `data/gemini-usage.json` | Last scraped Gemini usage data |
 
 **Credentials file structure:**
 ```json
@@ -511,7 +517,9 @@ The dashboard works best when these files exist:
 - `$WORKSPACE_DIR/HEARTBEAT.md` - Heartbeat task list
 - `$WORKSPACE_DIR/memory/YYYY-MM-DD.md` - Daily memory notes
 - `$WORKSPACE_DIR/scripts/scrape-claude-usage.sh` - Claude usage scraper
-- `$WORKSPACE_DIR/scripts/parse-claude-usage.py` - Usage parser
+- `$WORKSPACE_DIR/scripts/parse-claude-usage.py` - Claude usage parser
+- `$WORKSPACE_DIR/scripts/scrape-gemini-usage.sh` - Gemini usage scraper
+- `$WORKSPACE_DIR/scripts/parse-gemini-usage.py` - Gemini usage parser
 
 ## ⌨️ Keyboard Shortcuts
 
