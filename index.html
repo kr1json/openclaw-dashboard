@@ -245,6 +245,20 @@ body.sidebar-pinned .main {
   transform: translateY(-2px);
 }
 
+.cron-job-row {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px;
+  transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.cron-job-row:hover {
+  transform: translateY(-2px) scale(1.01);
+  border-color: rgba(99, 102, 241, 0.45);
+  box-shadow: 0 8px 24px rgba(0,0,0,0.28);
+}
+
 .card-title {
   font-size: 13px;
   font-weight: 600;
@@ -4699,7 +4713,7 @@ function renderCronJobs(crons = []) {
     const feedbackColor = ui.error ? 'var(--red)' : ui.message ? 'var(--green)' : 'var(--text-muted)';
     const feedbackText = ui.pending ? '처리 중…' : (ui.error ? `실패: ${ui.error}` : (ui.message || ''));
 
-    return `<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;padding:12px;">
+    return `<div class="cron-job-row">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;">
         <div style="min-width:0;">
           <div style="font-weight:700;font-size:13px;word-break:break-word;">${statusIcon} ${c.name}</div>
@@ -4720,7 +4734,7 @@ function renderCronJobs(crons = []) {
   if (overviewEl) overviewEl.innerHTML = cardsHtml;
 
   const pageEl = document.getElementById('cronJobsPage');
-  if (pageEl) pageEl.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px;">${cardsHtml}</div>`;
+  if (pageEl) pageEl.innerHTML = `<div style="display:flex;flex-direction:column;gap:10px;">${cardsHtml}</div>`;
 
   const summaryEl = document.getElementById('cronSummary');
   if (summaryEl) {
