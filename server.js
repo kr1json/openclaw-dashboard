@@ -9,6 +9,7 @@ const crypto = require('crypto');
 const { toCronViewModel } = require('./cron-utils');
 const { parseCronRequest } = require('./cron-route-utils');
 const { collectUsageFromSessionDirs } = require('./usage-utils');
+const { collectCostFromSessionDirs } = require('./cost-utils');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT || '7000');
 const OPENCLAW_DIR = process.env.OPENCLAW_DIR || path.join(os.homedir(), '.openclaw');
@@ -595,37 +596,7 @@ function getTaskActivity() {
 
 function getCostData() {
   try {
-    const files = fs.readdirSync(sessDir).filter(f => f.endsWith('.jsonl'));
-    const perModel = {};
-    const perDay = {};
-    const perSession = {};
-    let total = 0;
-
-    for (const file of files) {
-      const sid = file.replace('.jsonl', '');
-      let scost = 0;
-      const lines = fs.readFileSync(path.join(sessDir, file), 'utf8').split('\n');
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const d = JSON.parse(line);
-          if (d.type !== 'message') continue;
-          const msg = d.message;
-          if (!msg || !msg.usage || !msg.usage.cost) continue;
-          const c = msg.usage.cost.total || 0;
-          if (c <= 0) continue;
-          const model = msg.model || 'unknown';
-          if (model.includes('delivery-mirror')) continue;
-          const ts = d.timestamp || '';
-          const day = ts.substring(0, 10);
-          perModel[model] = (perModel[model] || 0) + c;
-          perDay[day] = (perDay[day] || 0) + c;
-          scost += c;
-          total += c;
-        } catch {}
-      }
-      if (scost > 0) perSession[sid] = scost;
-    }
+    const { perModel, perDay, perSession, total } = collectCostFromSessionDirs(getAgentSessionDirs());
 
     const now = new Date();
     const todayKey = now.toISOString().substring(0, 10);
