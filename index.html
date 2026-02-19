@@ -4753,16 +4753,26 @@ async function fetchNewData() {
 // Cron management
 window.toggleCronJob = async function(id) {
   try {
-    await authFetch(`/api/cron/${id}/toggle`, { method: 'POST' });
+    const res = await authFetch(`/api/cron/${encodeURIComponent(id)}/toggle`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Toggle failed');
+    sendNotification('Cron Updated', `${id} is now ${data.enabled ? 'enabled' : 'disabled'}`);
     await fetchNewData();
-  } catch {}
+  } catch (e) {
+    sendNotification('Cron Toggle Failed', e.message || 'Unknown error');
+  }
 };
 
 window.runCronJob = async function(id) {
   try {
-    await authFetch(`/api/cron/${id}/run`, { method: 'POST' });
-    sendNotification('Cron Job Started', `Running cron job ${id.substring(0, 8)}...`);
-  } catch {}
+    const res = await authFetch(`/api/cron/${encodeURIComponent(id)}/run`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.error || 'Run failed');
+    sendNotification('Cron Job Started', `Running cron job ${id}...`);
+    setTimeout(() => fetchNewData(), 1200);
+  } catch (e) {
+    sendNotification('Cron Run Failed', e.message || 'Unknown error');
+  }
 };
 
     document.getElementById('gitActivity').innerHTML = git.map(c => {

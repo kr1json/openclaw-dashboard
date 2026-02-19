@@ -7,6 +7,7 @@ const os = require('os');
 const { exec } = require('child_process');
 const crypto = require('crypto');
 const { toCronViewModel } = require('./cron-utils');
+const { parseCronRequest } = require('./cron-route-utils');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT || '7000');
 const OPENCLAW_DIR = process.env.OPENCLAW_DIR || path.join(os.homedir(), '.openclaw');
@@ -2665,13 +2666,11 @@ const server = http.createServer((req, res) => {
     }
     if (req.url.startsWith('/api/cron/') && req.method === 'POST') {
       try {
-        const parts = req.url.split('/');
-        const action = parts[parts.length - 1];
-        const id = parts[parts.length - 2].replace(/[^a-zA-Z0-9\-_]/g, '');
-        if (!id) { res.writeHead(400); res.end('Invalid id'); return; }
-        
+        const parsed = parseCronRequest(req.url);
+        if (!parsed) { res.writeHead(400); res.end('Invalid cron request'); return; }
+        const { id, action } = parsed;
+
         if (action === 'toggle') {
-          const { execSync } = require('child_process');
           if (!fs.existsSync(cronFile)) throw new Error('No cron file');
           const data = JSON.parse(fs.readFileSync(cronFile, 'utf8'));
           const job = (data.jobs || []).find(j => j.id === id);
@@ -2682,7 +2681,9 @@ const server = http.createServer((req, res) => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: true, enabled: job.enabled }));
         } else if (action === 'run') {
-          exec(`openclaw cron run ${id}`, { timeout: 60000 }, (err) => {});
+          const { execFile } = require('child_process');
+          execFile('openclaw', ['cron', 'run', id], { timeout: 60000 }, () => {});
+          auditLog('cron_run', ip, { cronId: id });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: true }));
         } else {
