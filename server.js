@@ -1,21 +1,53 @@
+require('dotenv').config();
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { exec } = require('child_process');
 const crypto = require('crypto');
+const { toCronViewModel } = require('./cron-utils');
+const { parseCronRequest } = require('./cron-route-utils');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT || '7000');
 const OPENCLAW_DIR = process.env.OPENCLAW_DIR || path.join(os.homedir(), '.openclaw');
 const WORKSPACE_DIR = process.env.WORKSPACE_DIR || process.env.OPENCLAW_WORKSPACE || process.cwd();
 const AGENT_ID = process.env.OPENCLAW_AGENT || 'main';
 const sessDir = path.join(OPENCLAW_DIR, 'agents', AGENT_ID, 'sessions');
+
+function getAgentSessionDirs() {
+  const dirs = [];
+  const seen = new Set();
+
+  const pushDir = (d) => {
+    try {
+      if (!d || seen.has(d)) return;
+      if (!fs.existsSync(d)) return;
+      if (!fs.statSync(d).isDirectory()) return;
+      seen.add(d);
+      dirs.push(d);
+    } catch {}
+  };
+
+  pushDir(sessDir);
+  try {
+    const agentsDir = path.join(OPENCLAW_DIR, 'agents');
+    if (fs.existsSync(agentsDir)) {
+      for (const id of fs.readdirSync(agentsDir)) {
+        pushDir(path.join(agentsDir, id, 'sessions'));
+      }
+    }
+  } catch {}
+
+  return dirs;
+}
 const cronFile = path.join(OPENCLAW_DIR, 'cron', 'jobs.json');
 const dataDir = path.join(WORKSPACE_DIR, 'data');
 const memoryDir = path.join(WORKSPACE_DIR, 'memory');
 const memoryMdPath = path.join(WORKSPACE_DIR, 'MEMORY.md');
 const heartbeatPath = path.join(WORKSPACE_DIR, 'HEARTBEAT.md');
 const healthHistoryFile = path.join(dataDir, 'health-history.json');
+const taskBoardFile = path.join(dataDir, 'task-board.json');
 const auditLogPath = path.join(dataDir, 'audit.log');
 const credentialsFile = path.join(dataDir, 'credentials.json');
 const mfaSecretFile = path.join(dataDir, 'mfa-secret.txt');
@@ -27,9 +59,7 @@ const configFiles = [
 ];
 const workspaceFilenames = ['AGENTS.md','HEARTBEAT.md','IDENTITY.md','MEMORY.md','SOUL.md','TOOLS.md','USER.md'];
 const claudeUsageFile = path.join(dataDir, 'claude-usage.json');
-const geminiUsageFile = path.join(dataDir, 'gemini-usage.json');
 const scrapeScript = path.join(WORKSPACE_DIR, 'scripts', 'scrape-claude-usage.sh');
-const geminiScrapeScript = path.join(WORKSPACE_DIR, 'scripts', 'scrape-gemini-usage.sh');
 
 const htmlPath = path.join(__dirname, 'index.html');
 
@@ -364,9 +394,17 @@ function resolveName(key) {
   return key.split(':').pop().substring(0, 12);
 }
 
+function resolveSessionJsonlPath(sessionId) {
+  for (const dir of getAgentSessionDirs()) {
+    const filePath = path.join(dir, sessionId + '.jsonl');
+    if (fs.existsSync(filePath)) return filePath;
+  }
+  return path.join(sessDir, sessionId + '.jsonl');
+}
+
 function getLastMessage(sessionId) {
   try {
-    const filePath = path.join(sessDir, sessionId + '.jsonl');
+    const filePath = resolveSessionJsonlPath(sessionId);
     if (!fs.existsSync(filePath)) return '';
     const data = fs.readFileSync(filePath, 'utf8');
     const lines = data.split('\n').filter(l => l.trim());
@@ -393,9 +431,6 @@ function getLastMessage(sessionId) {
   } catch { return ''; }
 }
 
-function isSessionFile(f) { return f.endsWith('.jsonl') || f.includes('.jsonl.reset.'); }
-function extractSessionId(f) { return f.replace(/\.jsonl(?:\.reset\.\d+)?$/, ''); }
-
 let sessionCostCache = {};
 let sessionCostCacheTime = 0;
 
@@ -405,21 +440,23 @@ function getSessionCost(sessionId) {
     sessionCostCache = {};
     sessionCostCacheTime = now;
     try {
-      const files = fs.readdirSync(sessDir).filter(f => isSessionFile(f));
-      for (const file of files) {
-        const sid = extractSessionId(file);
-        let total = 0;
-        const lines = fs.readFileSync(path.join(sessDir, file), 'utf8').split('\n');
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const d = JSON.parse(line);
-            if (d.type !== 'message') continue;
-            const c = d.message?.usage?.cost?.total || 0;
-            if (c > 0) total += c;
-          } catch {}
+      for (const dir of getAgentSessionDirs()) {
+        const files = fs.readdirSync(dir).filter(f => f.endsWith('.jsonl'));
+        for (const file of files) {
+          const sid = file.replace('.jsonl', '');
+          let total = 0;
+          const lines = fs.readFileSync(path.join(dir, file), 'utf8').split('\n');
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const d = JSON.parse(line);
+              if (d.type !== 'message') continue;
+              const c = d.message?.usage?.cost?.total || 0;
+              if (c > 0) total += c;
+            } catch {}
+          }
+          if (total > 0) sessionCostCache[sid] = Math.round(total * 100) / 100;
         }
-        if (total > 0) sessionCostCache[sid] = Math.round(total * 100) / 100;
       }
     } catch {}
   }
@@ -427,38 +464,144 @@ function getSessionCost(sessionId) {
 }
 
 function getSessionsJson() {
-  try {
-    const sFile = path.join(sessDir, 'sessions.json');
-    const data = JSON.parse(fs.readFileSync(sFile, 'utf8'));
-    return Object.entries(data).map(([key, s]) => ({
-      key,
-      label: s.label || resolveName(key),
-      model: s.modelOverride || s.model || '-',
-      totalTokens: s.totalTokens || 0,
-      contextTokens: s.contextTokens || 0,
-      kind: s.kind || (key.includes('group') ? 'group' : 'direct'),
+  const merged = [];
+  const seen = new Set();
+
+  for (const dir of getAgentSessionDirs()) {
+    try {
+      const sFile = path.join(dir, 'sessions.json');
+      if (!fs.existsSync(sFile)) continue;
+      const data = JSON.parse(fs.readFileSync(sFile, 'utf8'));
+      for (const [key, s] of Object.entries(data || {})) {
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        merged.push({
+          key,
+          label: s.label || resolveName(key),
+          model: s.modelOverride || s.model || '-',
+          totalTokens: s.totalTokens || 0,
+          contextTokens: s.contextTokens || 0,
+          kind: s.kind || (key.includes('group') ? 'group' : 'direct'),
+          updatedAt: s.updatedAt || 0,
+          createdAt: s.createdAt || s.updatedAt || 0,
+          aborted: s.abortedLastRun || false,
+          thinkingLevel: s.thinkingLevel || null,
+          channel: s.channel || '-',
+          sessionId: s.sessionId || '-',
+          lastMessage: getLastMessage(s.sessionId || key),
+          cost: getSessionCost(s.sessionId || key)
+        });
+      }
+    } catch {}
+  }
+
+  return merged;
+}
+
+function getSubagentSessionHints() {
+  const sessions = getSessionsJson();
+  return sessions
+    .filter(s => String(s.key || '').includes('subagent'))
+    .map(s => ({
+      key: s.key,
+      sessionId: s.sessionId,
+      label: s.label,
       updatedAt: s.updatedAt || 0,
-      createdAt: s.createdAt || s.updatedAt || 0,
-      aborted: s.abortedLastRun || false,
-      thinkingLevel: s.thinkingLevel || null,
-      channel: s.channel || '-',
-      sessionId: s.sessionId || '-',
-      lastMessage: getLastMessage(s.sessionId || key),
-      cost: getSessionCost(s.sessionId || key)
-    }));
-  } catch (e) { return []; }
+      lastMessage: s.lastMessage || ''
+    }))
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    .slice(0, 30);
+}
+
+function getAgentsOverview() {
+  const now = Date.now();
+  const sessions = getSessionsJson();
+  const byAgent = new Map();
+
+  const parseAgent = (key) => {
+    const m = String(key || '').match(/^agent:([^:]+)/);
+    return m ? m[1] : 'unknown';
+  };
+
+  for (const a of getKnownAgents()) {
+    byAgent.set(a, { agent: a, sessions: 0, active: 0, subagents: 0, totalTokens: 0, totalCost: 0, lastUpdatedAt: 0, lastMessage: '' });
+  }
+
+  for (const s of sessions) {
+    const agent = parseAgent(s.key);
+    if (!byAgent.has(agent)) byAgent.set(agent, { agent, sessions: 0, active: 0, subagents: 0, totalTokens: 0, totalCost: 0, lastUpdatedAt: 0, lastMessage: '' });
+    const row = byAgent.get(agent);
+    row.sessions++;
+    row.totalTokens += s.totalTokens || 0;
+    row.totalCost += s.cost || 0;
+    if ((s.updatedAt || 0) > row.lastUpdatedAt) {
+      row.lastUpdatedAt = s.updatedAt || 0;
+      row.lastMessage = s.lastMessage || '';
+    }
+    if (String(s.key || '').includes('subagent')) row.subagents++;
+    if ((now - (s.updatedAt || 0)) < 5 * 60 * 1000) row.active++;
+  }
+
+  return Array.from(byAgent.values()).sort((a, b) => (b.lastUpdatedAt || 0) - (a.lastUpdatedAt || 0));
+}
+
+function getTaskActivity() {
+  const now = Date.now();
+  const sessions = getSessionsJson();
+  const board = readTaskBoard();
+  const CRON_ACTIVITY_WINDOW_MS = 6 * 60 * 60 * 1000; // keep activity view focused, hide old cron noise by default
+
+  const sessionActivities = sessions
+    .filter(s => {
+      const k = String(s.key || '');
+      const ageMs = now - (s.updatedAt || 0);
+      if (k.includes('cron')) return ageMs < CRON_ACTIVITY_WINDOW_MS;
+      return k.includes('subagent') || k.includes(':group:') || (ageMs < 60 * 60 * 1000);
+    })
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    .slice(0, 120)
+    .map(s => {
+      const ageMs = now - (s.updatedAt || 0);
+      const status = ageMs < 3 * 60 * 1000 ? 'running' : ageMs < 30 * 60 * 1000 ? 'idle' : 'stale';
+      return {
+        id: s.sessionId || s.key,
+        type: String(s.key || '').includes('subagent') ? 'subagent' : String(s.key || '').includes('cron') ? 'cron' : 'session',
+        label: s.label,
+        key: s.key,
+        status,
+        updatedAt: s.updatedAt || 0,
+        ageMs,
+        model: s.model,
+        snippet: s.lastMessage || ''
+      };
+    });
+
+  const boardActivities = (board.cards || []).map(c => ({
+    id: c.id,
+    type: 'card',
+    label: c.title,
+    key: c.sessionKey || '',
+    runId: c.runId || '',
+    status: c.control?.state || (c.status === 'Done' ? 'done' : 'open'),
+    updatedAt: c.updatedAt || 0,
+    ageMs: now - (c.updatedAt || 0),
+    model: '-',
+    snippet: c.text || ''
+  }));
+
+  return { sessions: sessionActivities, cards: boardActivities };
 }
 
 function getCostData() {
   try {
-    const files = fs.readdirSync(sessDir).filter(f => isSessionFile(f));
+    const files = fs.readdirSync(sessDir).filter(f => f.endsWith('.jsonl'));
     const perModel = {};
     const perDay = {};
     const perSession = {};
     let total = 0;
 
     for (const file of files) {
-      const sid = extractSessionId(file);
+      const sid = file.replace('.jsonl', '');
       let scost = 0;
       const lines = fs.readFileSync(path.join(sessDir, file), 'utf8').split('\n');
       for (const line of lines) {
@@ -699,7 +842,7 @@ function getUsageWindows() {
 
 function getRateLimitEvents() {
   try {
-    const files = fs.readdirSync(sessDir).filter(f => isSessionFile(f));
+    const files = fs.readdirSync(sessDir).filter(f => f.endsWith('.jsonl'));
     const events = [];
     const now = Date.now();
     const fiveHoursMs = 5 * 3600000;
@@ -897,9 +1040,9 @@ function watchSessionFile(file) {
 function startLiveWatcher() {
   if (liveWatcher) return;
   try {
-    fs.readdirSync(sessDir).filter(f => isSessionFile(f)).forEach(watchSessionFile);
+    fs.readdirSync(sessDir).filter(f => f.endsWith('.jsonl')).forEach(watchSessionFile);
     liveWatcher = fs.watch(sessDir, (eventType, filename) => {
-      if (filename && isSessionFile(filename) && !_fileWatchers[filename]) {
+      if (filename && filename.endsWith('.jsonl') && !_fileWatchers[filename]) {
         try { if (fs.existsSync(path.join(sessDir, filename))) watchSessionFile(filename); } catch {}
       }
     });
@@ -981,31 +1124,7 @@ function getCronJobs() {
   try {
     if (!fs.existsSync(cronFile)) return [];
     const data = JSON.parse(fs.readFileSync(cronFile, 'utf8'));
-    return (data.jobs || []).map(j => {
-      let humanSchedule = j.schedule?.expr || '';
-      try {
-        const parts = humanSchedule.split(' ');
-        if (parts.length === 5) {
-          const [min, hour, dom, mon, dow] = parts;
-          const dowNames = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
-          let readable = '';
-          if (dow !== '*') readable = dowNames[parseInt(dow)] || dow;
-          if (hour !== '*' && min !== '*') readable += (readable ? ' ' : '') + `${hour.padStart(2,'0')}:${min.padStart(2,'0')}`;
-          if (j.schedule?.tz) readable += ` (${j.schedule.tz.split('/').pop()})`;
-          if (readable) humanSchedule = readable;
-        }
-      } catch {}
-      return {
-        id: j.id,
-        name: j.name || j.id.substring(0, 8),
-        schedule: humanSchedule,
-        enabled: j.enabled !== false,
-        lastStatus: j.state?.lastStatus || 'unknown',
-        lastRunAt: j.state?.lastRunAtMs || 0,
-        nextRunAt: j.state?.nextRunAtMs || 0,
-        lastDuration: j.state?.lastDurationMs || 0
-      };
-    });
+    return (data.jobs || []).map(toCronViewModel);
   } catch { return []; }
 }
 
@@ -1032,14 +1151,68 @@ function getGitActivity() {
 
 function getServicesStatus() {
   const { execSync } = require('child_process');
-  const services = ['openclaw', 'agent-dashboard', 'tailscaled'];
 
-  if (os.platform() === 'linux') {
-    return services.map(name => {
+  function getPm2States() {
+    try {
+      const out = execSync('pm2 jlist 2>/dev/null', { encoding: 'utf8', timeout: 4000 }).trim();
+      if (!out) return new Map();
+      const arr = JSON.parse(out);
+      const map = new Map();
+      for (const p of arr) {
+        const name = String(p?.name || '').toLowerCase();
+        const status = String(p?.pm2_env?.status || '').toLowerCase();
+        if (name) map.set(name, status === 'online' || status === 'launching');
+      }
+      return map;
+    } catch {
+      return new Map();
+    }
+  }
+
+  function checkSystemd(names) {
+    for (const name of names) {
       try {
         const status = execSync(`systemctl is-active ${name} 2>/dev/null`, { encoding: 'utf8', timeout: 3000 }).trim();
-        return { name, active: status === 'active' };
-      } catch { return { name, active: false }; }
+        if (status === 'active') return { active: true, source: `systemd:${name}` };
+      } catch {}
+    }
+    return { active: false, source: 'systemd' };
+  }
+
+  function checkOpenClawStatusJson() {
+    try {
+      const out = execSync('openclaw status --json 2>/dev/null', { encoding: 'utf8', timeout: 7000 });
+      const data = JSON.parse(out || '{}');
+      const running = !!(data?.gateway?.reachable || data?.gateway?.mode === 'local');
+      return { active: running, source: 'openclaw-status' };
+    } catch {
+      return null;
+    }
+  }
+
+  if (os.platform() === 'linux') {
+    const pm2 = getPm2States();
+    const aliases = {
+      openclaw: ['openclaw', 'openclaw-gateway', 'gateway'],
+      'agent-dashboard': ['agent-dashboard', 'openclaw-dashboard', 'dashboard'],
+      tailscaled: ['tailscaled']
+    };
+
+    const pick = (service) => {
+      const names = aliases[service] || [service];
+      for (const n of names) {
+        if (pm2.has(n)) return { active: pm2.get(n), source: `pm2:${n}` };
+      }
+      if (service === 'openclaw') {
+        const oc = checkOpenClawStatusJson();
+        if (oc) return oc;
+      }
+      return checkSystemd(names);
+    };
+
+    return ['openclaw', 'agent-dashboard', 'tailscaled'].map(name => {
+      const result = pick(name);
+      return { name, active: result.active, source: result.source };
     });
   }
 
@@ -1074,58 +1247,109 @@ function getServicesStatus() {
       const label = cols.length >= 3 ? cols[cols.length - 1] : '';
       if (pid !== '-' && pid !== '0' && label) runningLabels.add(label.toLowerCase());
     }
-    const openclawActive = Array.from(runningLabels).some(label =>
-      label === 'openclaw' || label.includes('openclaw')
-    );
+    const openclawActive = Array.from(runningLabels).some(label => label === 'openclaw' || label.includes('openclaw'));
 
-    return services.map(name => {
-      if (name === 'agent-dashboard') return { name, active: agentDashboardActive };
-      if (name === 'tailscaled') return { name, active: tailscaledActive };
-      return { name, active: openclawActive };
-    });
+    return [
+      { name: 'openclaw', active: openclawActive, source: 'launchctl' },
+      { name: 'agent-dashboard', active: agentDashboardActive, source: 'http' },
+      { name: 'tailscaled', active: tailscaledActive, source: 'tailscale' }
+    ];
   }
 
-  return services.map(name => ({ name, active: null }));
+  return ['openclaw', 'agent-dashboard', 'tailscaled'].map(name => ({ name, active: null, source: 'unknown' }));
+}
+
+function getAgentWorkspaces() {
+  const roots = [];
+  const seen = new Set();
+  const candidates = [
+    path.join(WORKSPACE_DIR, 'agents-ws'),
+    path.join(path.dirname(WORKSPACE_DIR), 'agents-ws'),
+    path.join(path.dirname(path.dirname(WORKSPACE_DIR)), 'agents-ws'),
+    path.join(os.homedir(), '.openclaw', 'workspace', 'agents-ws')
+  ];
+
+  for (const agentsWsDir of candidates) {
+    try {
+      if (!fs.existsSync(agentsWsDir)) continue;
+      for (const agentId of fs.readdirSync(agentsWsDir)) {
+        const ws = path.join(agentsWsDir, agentId);
+        try {
+          if (!fs.statSync(ws).isDirectory()) continue;
+          const key = agentId + '::' + ws;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          roots.push({ agentId, ws });
+        } catch {}
+      }
+    } catch {}
+  }
+  return roots;
+}
+
+function getKnownAgents() {
+  const set = new Set();
+  try {
+    const agentsDir = path.join(OPENCLAW_DIR, 'agents');
+    if (fs.existsSync(agentsDir)) {
+      for (const id of fs.readdirSync(agentsDir)) {
+        const p = path.join(agentsDir, id);
+        try { if (fs.statSync(p).isDirectory()) set.add(id); } catch {}
+      }
+    }
+  } catch {}
+  for (const { agentId } of getAgentWorkspaces()) set.add(agentId);
+  if (!set.size) set.add('main');
+  return Array.from(set).sort();
 }
 
 function getMemoryFiles() {
   const files = [];
-  try {
-    if (fs.existsSync(memoryMdPath)) {
-      const stat = fs.statSync(memoryMdPath);
-      files.push({ name: 'MEMORY.md', modified: stat.mtimeMs, size: stat.size });
-    }
-  } catch {}
-  try {
-    if (fs.existsSync(heartbeatPath)) {
-      const stat = fs.statSync(heartbeatPath);
-      files.push({ name: 'HEARTBEAT.md', modified: stat.mtimeMs, size: stat.size });
-    }
-  } catch {}
+  const pushFile = (name, fpath, agent = 'main') => {
+    try {
+      if (!fs.existsSync(fpath)) return;
+      const stat = fs.statSync(fpath);
+      files.push({ name, modified: stat.mtimeMs, size: stat.size, agent });
+    } catch {}
+  };
+
+  pushFile('MEMORY.md', memoryMdPath, 'main');
+  pushFile('HEARTBEAT.md', heartbeatPath, 'main');
+
   try {
     if (fs.existsSync(memoryDir)) {
       const entries = fs.readdirSync(memoryDir).filter(f => f.endsWith('.md')).sort().reverse();
-      entries.forEach(e => {
-        try {
-          const stat = fs.statSync(path.join(memoryDir, e));
-          files.push({ name: 'memory/' + e, modified: stat.mtimeMs, size: stat.size });
-        } catch {}
-      });
+      entries.forEach(e => pushFile('memory/' + e, path.join(memoryDir, e), 'main'));
     }
   } catch {}
-  return files;
+
+  for (const { agentId, ws } of getAgentWorkspaces()) {
+    const aMemoryMd = path.join(ws, 'MEMORY.md');
+    const aMemoryDir = path.join(ws, 'memory');
+    pushFile(`agents/${agentId}/MEMORY.md`, aMemoryMd, agentId);
+    try {
+      if (fs.existsSync(aMemoryDir)) {
+        const entries = fs.readdirSync(aMemoryDir).filter(f => f.endsWith('.md')).sort().reverse();
+        entries.forEach(e => pushFile(`agents/${agentId}/memory/${e}`, path.join(aMemoryDir, e), agentId));
+      }
+    } catch {}
+  }
+
+  return files.sort((a, b) => (b.modified || 0) - (a.modified || 0));
 }
 
 function getKeyFiles() {
   const files = [];
-  for (const fname of workspaceFilenames) {
-    const fpath = path.join(WORKSPACE_DIR, fname);
+  const pushKeyFile = (name, fpath, editable = true, agent = 'main') => {
     try {
-      if (fs.existsSync(fpath)) {
-        const stat = fs.statSync(fpath);
-        files.push({ name: fname, modified: stat.mtimeMs, size: stat.size, editable: true });
-      }
+      if (!fs.existsSync(fpath)) return;
+      const stat = fs.statSync(fpath);
+      files.push({ name, modified: stat.mtimeMs, size: stat.size, editable, agent });
     } catch {}
+  };
+
+  for (const fname of workspaceFilenames) {
+    pushKeyFile(fname, path.join(WORKSPACE_DIR, fname), true, 'main');
   }
   try {
     if (fs.existsSync(skillsDir)) {
@@ -1138,15 +1362,21 @@ function getKeyFiles() {
             const skillMd = path.join(entryPath, 'SKILL.md');
             if (fs.existsSync(skillMd)) {
               const fstat = fs.statSync(skillMd);
-              files.push({ name: 'skills/' + e + '/SKILL.md', modified: fstat.mtimeMs, size: fstat.size, editable: true });
+              files.push({ name: 'skills/' + e + '/SKILL.md', modified: fstat.mtimeMs, size: fstat.size, editable: true, agent: 'main' });
             }
           } else if (e.endsWith('.md')) {
-            files.push({ name: 'skills/' + e, modified: stat.mtimeMs, size: stat.size, editable: true });
+            files.push({ name: 'skills/' + e, modified: stat.mtimeMs, size: stat.size, editable: true, agent: 'main' });
           }
         } catch {}
       }
     }
   } catch {}
+
+  for (const { agentId, ws } of getAgentWorkspaces()) {
+    for (const fname of workspaceFilenames) {
+      pushKeyFile(`agents/${agentId}/${fname}`, path.join(ws, fname), true, agentId);
+    }
+  }
   for (const cf of configFiles) {
     try {
       if (fs.existsSync(cf.path)) {
@@ -1181,12 +1411,19 @@ function buildKeyFilesAllowed() {
   for (const cf of configFiles) {
     if (fs.existsSync(cf.path)) map[cf.name] = cf.path;
   }
+  for (const { agentId, ws } of getAgentWorkspaces()) {
+    for (const fname of workspaceFilenames) {
+      const fpath = path.join(ws, fname);
+      const key = `agents/${agentId}/${fname}`;
+      if (fs.existsSync(fpath)) map[key] = fpath;
+    }
+  }
   return map;
 }
 
 function getTodayTokens() {
   try {
-    const files = fs.readdirSync(sessDir).filter(f => isSessionFile(f));
+    const files = fs.readdirSync(sessDir).filter(f => f.endsWith('.jsonl'));
     const now = new Date();
     const todayStr = now.toISOString().substring(0, 10);
     const perModel = {};
@@ -1221,7 +1458,7 @@ function getTodayTokens() {
 
 function getAvgResponseTime() {
   try {
-    const files = fs.readdirSync(sessDir).filter(f => isSessionFile(f));
+    const files = fs.readdirSync(sessDir).filter(f => f.endsWith('.jsonl'));
     const now = new Date();
     const todayStr = now.toISOString().substring(0, 10);
     const diffs = [];
@@ -1305,6 +1542,92 @@ setInterval(() => {
     }
   }
 }, 60 * 1000);
+
+function defaultTaskBoard() {
+  return {
+    columns: ['Backlog', 'In Progress', 'Review', 'Done'],
+    cards: [],
+    updatedAt: Date.now()
+  };
+}
+
+function readTaskBoard() {
+  try {
+    if (!fs.existsSync(taskBoardFile)) return defaultTaskBoard();
+    const data = JSON.parse(fs.readFileSync(taskBoardFile, 'utf8'));
+    if (!Array.isArray(data.columns) || !Array.isArray(data.cards)) return defaultTaskBoard();
+    return data;
+  } catch {
+    return defaultTaskBoard();
+  }
+}
+
+function writeTaskBoard(board) {
+  const next = {
+    columns: ['Backlog', 'In Progress', 'Review', 'Done'],
+    cards: Array.isArray(board.cards) ? board.cards : [],
+    updatedAt: Date.now()
+  };
+  const tmp = taskBoardFile + '.tmp.' + Date.now();
+  fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8');
+  fs.renameSync(tmp, taskBoardFile);
+  return next;
+}
+
+function makeCardId() {
+  return 'card_' + crypto.randomBytes(6).toString('hex');
+}
+
+function resolveSessionIdForKey(sessionKey) {
+  const list = getSessionsJson();
+  const hit = list.find(s => s.key === sessionKey || String(s.key || '').includes(sessionKey));
+  return hit?.sessionId || null;
+}
+
+function dispatchTaskControl(card, cmd, errorLine = '') {
+  try {
+    const { spawnSync } = require('child_process');
+    const sessionId = resolveSessionIdForKey(card.sessionKey || '');
+    if (!sessionId || sessionId === '-') return { ok: false, reason: 'session-not-found' };
+
+    const controlMessage = cmd === 'stop'
+      ? `[task-control] runId=${card.runId || '-'} STOP 요청입니다. 현재 작업을 즉시 중단하고 \"STOPPED\"로 짧게 응답하세요.`
+      : `[task-control] runId=${card.runId || '-'} RETRY 요청입니다. 직전 실패 원인: ${errorLine || 'unknown'}. 같은 목표를 재시도하고, 변경된 접근만 간단히 보고하세요.`;
+
+    const r = spawnSync('openclaw', [
+      'agent',
+      '--session-id', sessionId,
+      '--message', controlMessage,
+      '--timeout', '120',
+      '--json'
+    ], { encoding: 'utf8', timeout: 120000 });
+
+    if (r.error) return { ok: false, reason: 'dispatch-failed', error: String(r.error.message || r.error), sessionId };
+    if (r.status !== 0) return { ok: false, reason: 'dispatch-failed', error: (r.stderr || r.stdout || `exit ${r.status}`).slice(0, 1200), sessionId };
+
+    return { ok: true, sessionId, output: (r.stdout || '').slice(0, 8000) };
+  } catch (e) {
+    return { ok: false, reason: 'dispatch-failed', error: String(e?.message || e) };
+  }
+}
+
+function parseJsonBody(req, maxBytes = MAX_FILE_BODY) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    req.on('data', chunk => {
+      body += chunk;
+      if (body.length > maxBytes) {
+        reject(new Error('Payload too large'));
+        req.destroy();
+      }
+    });
+    req.on('end', () => {
+      try { resolve(body ? JSON.parse(body) : {}); }
+      catch (e) { reject(e); }
+    });
+    req.on('error', reject);
+  });
+}
 
 const server = http.createServer((req, res) => {
   if (!httpsEnforcement(req, res)) return;
@@ -1698,6 +2021,165 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify(getSessionsJson()));
       return;
     }
+    if (req.url === '/api/task-board') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(readTaskBoard()));
+      return;
+    }
+    if (req.url === '/api/subagents-active') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getSubagentSessionHints()));
+      return;
+    }
+    if (req.url === '/api/agents-overview') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getAgentsOverview()));
+      return;
+    }
+    if (req.url === '/api/task-activity') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(getTaskActivity()));
+      return;
+    }
+    if (req.url === '/api/task-board/cards' && req.method === 'POST') {
+      parseJsonBody(req, 128 * 1024).then(body => {
+        const board = readTaskBoard();
+        const title = String(body.title || '').trim();
+        if (!title) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'title is required' }));
+          return;
+        }
+        const now = Date.now();
+        const card = {
+          id: makeCardId(),
+          title,
+          text: String(body.text || ''),
+          status: board.columns.includes(body.status) ? body.status : 'Backlog',
+          assignee: String(body.assignee || ''),
+          priority: String(body.priority || 'normal'),
+          links: Array.isArray(body.links) ? body.links.slice(0, 20) : [],
+          attachments: Array.isArray(body.attachments) ? body.attachments.slice(0, 20) : [],
+          sessionKey: String(body.sessionKey || ''),
+          runId: String(body.runId || ''),
+          subagent: body.subagent || null,
+          control: { state: 'idle', lastAction: null, lastErrorLine: '', history: [] },
+          createdAt: now,
+          updatedAt: now
+        };
+        board.cards.push(card);
+        const saved = writeTaskBoard(board);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, card, board: saved }));
+      }).catch(e => {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message || 'invalid json' }));
+      });
+      return;
+    }
+    if (req.url.startsWith('/api/task-board/cards/') && req.method === 'GET') {
+      const hm = req.url.match(/^\/api\/task-board\/cards\/([^\/]+)\/history$/);
+      if (hm) {
+        const cardId = decodeURIComponent(hm[1]);
+        const board = readTaskBoard();
+        const card = board.cards.find(c => c.id === cardId);
+        if (!card) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'card not found' }));
+          return;
+        }
+        const history = Array.isArray(card.control?.history) ? card.control.history : [];
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ cardId, history }));
+        return;
+      }
+    }
+
+    if (req.url.startsWith('/api/task-board/cards/') && req.method === 'POST') {
+      const m = req.url.match(/^\/api\/task-board\/cards\/([^\/]+)\/(move|update|control)$/);
+      if (m) {
+        const cardId = decodeURIComponent(m[1]);
+        const action = m[2];
+        parseJsonBody(req, 128 * 1024).then(body => {
+          const board = readTaskBoard();
+          const card = board.cards.find(c => c.id === cardId);
+          if (!card) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'card not found' }));
+            return;
+          }
+          if (action === 'move') {
+            const status = String(body.status || '');
+            if (!board.columns.includes(status)) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'invalid status' }));
+              return;
+            }
+            card.status = status;
+          } else if (action === 'update') {
+            if (typeof body.title === 'string') card.title = body.title.trim() || card.title;
+            if (typeof body.text === 'string') card.text = body.text;
+            if (typeof body.assignee === 'string') card.assignee = body.assignee;
+            if (typeof body.priority === 'string') card.priority = body.priority;
+            if (Array.isArray(body.links)) card.links = body.links.slice(0, 20);
+            if (Array.isArray(body.attachments)) card.attachments = body.attachments.slice(0, 20);
+            if (typeof body.sessionKey === 'string') card.sessionKey = body.sessionKey;
+            if (typeof body.runId === 'string') card.runId = body.runId;
+          } else if (action === 'control') {
+            const cmd = String(body.cmd || '').toLowerCase();
+            if (cmd !== 'stop' && cmd !== 'retry') {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: 'cmd must be stop|retry' }));
+              return;
+            }
+            card.control = card.control || { state: 'idle', lastAction: null, lastErrorLine: '' };
+            card.control.lastAction = cmd;
+            card.control.state = cmd === 'stop' ? 'stop-requested' : 'retry-requested';
+            const line = String(body.errorLine || card.control.lastErrorLine || '').trim();
+            if (cmd === 'retry') {
+              card.control.lastErrorLine = line;
+              if (line) card.text = (card.text || '') + `\n[retry-note] 최근 에러: ${line}`;
+            }
+
+            const dispatched = dispatchTaskControl(card, cmd, line);
+            card.control.lastDispatch = {
+              at: Date.now(),
+              ok: !!dispatched.ok,
+              sessionId: dispatched.sessionId || null,
+              reason: dispatched.reason || null,
+              error: dispatched.error || null
+            };
+            card.control.history = Array.isArray(card.control.history) ? card.control.history : [];
+            card.control.history.unshift({
+              id: 'ctrl_' + crypto.randomBytes(4).toString('hex'),
+              ts: Date.now(),
+              cmd,
+              runId: card.runId || '',
+              sessionKey: card.sessionKey || '',
+              errorLine: line || '',
+              dispatch: {
+                ok: !!dispatched.ok,
+                reason: dispatched.reason || null,
+                error: dispatched.error || null,
+                sessionId: dispatched.sessionId || null
+              }
+            });
+            if (card.control.history.length > 50) card.control.history = card.control.history.slice(0, 50);
+            if (dispatched.ok) {
+              card.control.state = cmd === 'stop' ? 'stop-sent' : 'retry-sent';
+            }
+          }
+          card.updatedAt = Date.now();
+          const saved = writeTaskBoard(board);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, card, board: saved }));
+        }).catch(e => {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: e.message || 'invalid json' }));
+        });
+        return;
+      }
+    }
     if (req.url === '/api/usage') {
       const now = Date.now();
       if (!usageCache || now - usageCacheTime > 10000) {
@@ -1731,7 +2213,7 @@ const server = http.createServer((req, res) => {
       const sessionId = rawId.replace(/[^a-zA-Z0-9\-_:.]/g, '');
       const messages = [];
       try {
-        const files = fs.readdirSync(sessDir).filter(f => isSessionFile(f));
+        const files = fs.readdirSync(sessDir).filter(f => f.endsWith('.jsonl'));
         let targetFile = files.find(f => f.includes(sessionId));
         if (!targetFile) {
           const sFile = path.join(sessDir, 'sessions.json');
@@ -1818,26 +2300,6 @@ const server = http.createServer((req, res) => {
       }
       return;
     }
-    if (req.url === '/api/gemini-usage-scrape' && req.method === 'POST') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      if (fs.existsSync(geminiScrapeScript)) {
-        exec(`bash ${geminiScrapeScript}`, { timeout: 60000 }, (err) => {});
-        res.end(JSON.stringify({ status: 'started' }));
-      } else {
-        res.end(JSON.stringify({ status: 'error', message: 'Gemini scrape script not found' }));
-      }
-      return;
-    }
-    if (req.url === '/api/gemini-usage') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      try {
-        const data = JSON.parse(fs.readFileSync(geminiUsageFile, 'utf8'));
-        res.end(JSON.stringify(data));
-      } catch {
-        res.end(JSON.stringify({ error: 'No usage data. Run scrape-gemini-usage.sh first.' }));
-      }
-      return;
-    }
     if (req.url === '/api/response-time') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ avgSeconds: getAvgResponseTime() }));
@@ -1846,21 +2308,59 @@ const server = http.createServer((req, res) => {
     if (req.url.startsWith('/api/logs?')) {
       try {
         const params = new URL(req.url, 'http://localhost').searchParams;
-        const allowedServices = ['openclaw', 'agent-dashboard', 'tailscaled', 'sshd', 'nginx'];
-        const service = params.get('service') || 'openclaw';
-        if (!allowedServices.includes(service)) {
+        const requested = params.get('service') || 'openclaw';
+        const allowedServices = ['openclaw', 'agent-dashboard', 'openclaw-dashboard', 'openclaw-gateway', 'tailscaled', 'sshd', 'nginx'];
+        if (!allowedServices.includes(requested)) {
           res.writeHead(400, { 'Content-Type': 'text/plain' });
           res.end('Invalid service name');
           return;
         }
         if (process.platform !== 'linux') {
           res.writeHead(200, { 'Content-Type': 'text/plain' });
-          res.end('Logs (journalctl) are only available on Linux.\nOn macOS use Console.app or: log show --predicate \'processImagePath contains "openclaw"\' --last 1h');
+          res.end('Logs are currently implemented for Linux host.');
           return;
         }
         const lines = Math.min(Math.max(parseInt(params.get('lines')) || 100, 1), 1000);
-        const { execSync } = require('child_process');
-        const logs = execSync(`journalctl -u ${service} --no-pager -n ${lines} -o short 2>/dev/null || echo "No logs available"`, { encoding: 'utf8', timeout: 10000 });
+        const unitAliases = {
+          openclaw: ['openclaw-gateway', 'openclaw'],
+          'agent-dashboard': ['openclaw-dashboard', 'agent-dashboard'],
+          'openclaw-dashboard': ['openclaw-dashboard', 'agent-dashboard'],
+          'openclaw-gateway': ['openclaw-gateway', 'openclaw'],
+          tailscaled: ['tailscaled'],
+          sshd: ['sshd'],
+          nginx: ['nginx']
+        };
+        const candidates = unitAliases[requested] || [requested];
+        let logs = '';
+        for (const unit of candidates) {
+          try {
+            logs = execSync(`journalctl -u ${unit} --no-pager -n ${lines} -o short 2>/dev/null`, { encoding: 'utf8', timeout: 10000 }).trim();
+            if (logs && !logs.includes('-- No entries --')) {
+              logs = `[source: journalctl -u ${unit}]\n` + logs;
+              break;
+            }
+            logs = '';
+          } catch {}
+        }
+        if (!logs && (requested === 'agent-dashboard' || requested === 'openclaw-dashboard')) {
+          try {
+            const outPath = path.join(os.homedir(), '.pm2', 'logs', 'openclaw-dashboard-out.log');
+            const errPath = path.join(os.homedir(), '.pm2', 'logs', 'openclaw-dashboard-error.log');
+            const tail = (p) => {
+              if (!fs.existsSync(p)) return '';
+              const txt = fs.readFileSync(p, 'utf8');
+              const arr = txt.split('\n');
+              return arr.slice(Math.max(0, arr.length - lines)).join('\n').trim();
+            };
+            const outTail = tail(outPath);
+            const errTail = tail(errPath);
+            const chunks = [];
+            if (outTail) chunks.push('[out]\n' + outTail);
+            if (errTail) chunks.push('[error]\n' + errTail);
+            if (chunks.length) logs = `[source: pm2 log files]\n` + chunks.join('\n\n');
+          } catch {}
+        }
+        if (!logs) logs = 'No logs available';
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end(logs);
       } catch (e) {
@@ -2006,7 +2506,7 @@ const server = http.createServer((req, res) => {
           res.end(JSON.stringify(global[cacheKey]));
           return;
         }
-        const files = fs.readdirSync(sessDir).filter(f => isSessionFile(f));
+        const files = fs.readdirSync(sessDir).filter(f => f.endsWith('.jsonl'));
         let totalTokens = 0, totalMessages = 0, totalCost = 0, totalSessions = files.length;
         let firstSessionDate = null;
         const activeDays = new Set();
@@ -2166,13 +2666,11 @@ const server = http.createServer((req, res) => {
     }
     if (req.url.startsWith('/api/cron/') && req.method === 'POST') {
       try {
-        const parts = req.url.split('/');
-        const action = parts[parts.length - 1];
-        const id = parts[parts.length - 2].replace(/[^a-zA-Z0-9\-_]/g, '');
-        if (!id) { res.writeHead(400); res.end('Invalid id'); return; }
-        
+        const parsed = parseCronRequest(req.url);
+        if (!parsed) { res.writeHead(400); res.end('Invalid cron request'); return; }
+        const { id, action } = parsed;
+
         if (action === 'toggle') {
-          const { execSync } = require('child_process');
           if (!fs.existsSync(cronFile)) throw new Error('No cron file');
           const data = JSON.parse(fs.readFileSync(cronFile, 'utf8'));
           const job = (data.jobs || []).find(j => j.id === id);
@@ -2183,7 +2681,9 @@ const server = http.createServer((req, res) => {
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: true, enabled: job.enabled }));
         } else if (action === 'run') {
-          exec(`openclaw cron run ${id}`, { timeout: 60000 }, (err) => {});
+          const { execFile } = require('child_process');
+          execFile('openclaw', ['cron', 'run', id], { timeout: 60000 }, () => {});
+          auditLog('cron_run', ip, { cronId: id });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ success: true }));
         } else {
