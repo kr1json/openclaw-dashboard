@@ -4677,30 +4677,50 @@ function renderHealthSparklines() {
   renderSparkline('ramSparkline', 'ram', 'var(--blue)');
 }
 
+let latestCronJobs = [];
+const cronUiState = {};
+
+function setCronUiState(id, patch) {
+  cronUiState[id] = { ...(cronUiState[id] || {}), ...patch, updatedAt: Date.now() };
+}
+
 function renderCronJobs(crons = []) {
+  latestCronJobs = crons;
   const now = Date.now();
-  const rowsHtml = crons.map(c => {
+
+  const cardsHtml = crons.map(c => {
+    const ui = cronUiState[c.id] || {};
     const statusIcon = c.lastStatus === 'ok' ? '✅' : c.lastStatus === 'unknown' ? '⚪' : '❌';
     const nextAgo = c.nextRunAt > now ? formatTimeAgo(c.nextRunAt - now, true) : '--';
     const lastAgo = c.lastRunAt > 0 ? formatTimeAgo(now - c.lastRunAt, false) + ' ago' : '--';
     const toggleColor = c.enabled ? 'var(--green)' : 'var(--text-muted)';
     const toggleBg = c.enabled ? 'rgba(16,185,129,0.2)' : 'var(--bg-tertiary)';
-    return `<div style="padding:10px 0;border-bottom:1px solid var(--border);">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;gap:8px;">
-        <span style="font-weight:600;font-size:13px;flex:1;">${statusIcon} ${c.name}</span>
-        <button onclick="window.toggleCronJob('${c.id}')" style="padding:2px 8px;background:${toggleBg};color:${toggleColor};border:1px solid var(--border);border-radius:4px;font-size:10px;font-weight:600;cursor:pointer;margin-right:4px;">${c.enabled ? 'ON' : 'OFF'}</button>
-        <button onclick="window.runCronJob('${c.id}')" style="padding:2px 8px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:4px;font-size:10px;cursor:pointer;">▶ Run</button>
+    const isBusy = !!ui.pending;
+    const feedbackColor = ui.error ? 'var(--red)' : ui.message ? 'var(--green)' : 'var(--text-muted)';
+    const feedbackText = ui.pending ? '처리 중…' : (ui.error ? `실패: ${ui.error}` : (ui.message || ''));
+
+    return `<div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:10px;padding:12px;">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;">
+        <div style="min-width:0;">
+          <div style="font-weight:700;font-size:13px;word-break:break-word;">${statusIcon} ${c.name}</div>
+          <div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:4px;word-break:break-all;">${c.id}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+          <button onclick="window.toggleCronJob('${c.id}')" ${isBusy ? 'disabled' : ''} style="padding:4px 10px;background:${toggleBg};color:${toggleColor};border:1px solid var(--border);border-radius:6px;font-size:11px;font-weight:600;cursor:${isBusy ? 'not-allowed' : 'pointer'};opacity:${isBusy ? '0.6' : '1'};">${isBusy ? '…' : (c.enabled ? 'ON' : 'OFF')}</button>
+          <button onclick="window.runCronJob('${c.id}')" ${isBusy ? 'disabled' : ''} style="padding:4px 10px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:${isBusy ? 'not-allowed' : 'pointer'};opacity:${isBusy ? '0.6' : '1'};">${isBusy ? 'Running…' : '▶ Run'}</button>
+        </div>
       </div>
-      <div class="mono" style="font-size:11px;color:var(--text-muted);">${c.schedule || '--'}</div>
-      <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">Next: ${c.enabled ? nextAgo : 'disabled'} · Last run: ${lastAgo} · Duration: ${c.lastDuration ? (c.lastDuration / 1000).toFixed(1) + 's' : '--'}</div>
+      <div class="mono" style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">${c.schedule || '--'}</div>
+      <div style="font-size:11px;color:var(--text-muted);">Next: ${c.enabled ? nextAgo : 'disabled'} · Last run: ${lastAgo} · Duration: ${c.lastDuration ? (c.lastDuration / 1000).toFixed(1) + 's' : '--'}</div>
+      <div style="font-size:11px;color:${feedbackColor};margin-top:6px;min-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${feedbackText}</div>
     </div>`;
   }).join('') || '<div class="empty-state-text">No cron jobs</div>';
 
   const overviewEl = document.getElementById('cronJobs');
-  if (overviewEl) overviewEl.innerHTML = rowsHtml;
+  if (overviewEl) overviewEl.innerHTML = cardsHtml;
 
   const pageEl = document.getElementById('cronJobsPage');
-  if (pageEl) pageEl.innerHTML = rowsHtml;
+  if (pageEl) pageEl.innerHTML = `<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px;">${cardsHtml}</div>`;
 
   const summaryEl = document.getElementById('cronSummary');
   if (summaryEl) {
@@ -4752,25 +4772,36 @@ async function fetchNewData() {
 
 // Cron management
 window.toggleCronJob = async function(id) {
+  setCronUiState(id, { pending: true, error: '', message: '' });
+  renderCronJobs(latestCronJobs);
   try {
     const res = await authFetch(`/api/cron/${encodeURIComponent(id)}/toggle`, { method: 'POST' });
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || 'Toggle failed');
+    setCronUiState(id, { pending: false, error: '', message: `상태 변경 완료 (${data.enabled ? 'ON' : 'OFF'})` });
     sendNotification('Cron Updated', `${id} is now ${data.enabled ? 'enabled' : 'disabled'}`);
     await fetchNewData();
   } catch (e) {
+    setCronUiState(id, { pending: false, error: e.message || 'Unknown error' });
+    renderCronJobs(latestCronJobs);
     sendNotification('Cron Toggle Failed', e.message || 'Unknown error');
   }
 };
 
 window.runCronJob = async function(id) {
+  setCronUiState(id, { pending: true, error: '', message: '' });
+  renderCronJobs(latestCronJobs);
   try {
     const res = await authFetch(`/api/cron/${encodeURIComponent(id)}/run`, { method: 'POST' });
     const data = await res.json();
     if (!res.ok || !data.success) throw new Error(data.error || 'Run failed');
+    setCronUiState(id, { pending: false, error: '', message: '수동 실행 요청 완료' });
+    renderCronJobs(latestCronJobs);
     sendNotification('Cron Job Started', `Running cron job ${id}...`);
     setTimeout(() => fetchNewData(), 1200);
   } catch (e) {
+    setCronUiState(id, { pending: false, error: e.message || 'Unknown error' });
+    renderCronJobs(latestCronJobs);
     sendNotification('Cron Run Failed', e.message || 'Unknown error');
   }
 };
