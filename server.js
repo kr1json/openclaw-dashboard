@@ -8,6 +8,7 @@ const { exec } = require('child_process');
 const crypto = require('crypto');
 const { toCronViewModel } = require('./cron-utils');
 const { parseCronRequest } = require('./cron-route-utils');
+const { collectUsageFromSessionDirs } = require('./usage-utils');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT || '7000');
 const OPENCLAW_DIR = process.env.OPENCLAW_DIR || path.join(os.homedir(), '.openclaw');
@@ -708,55 +709,7 @@ let costCacheTime = 0;
 function getUsageWindows() {
   try {
     const now = Date.now();
-    const fiveHoursMs = 5 * 3600000;
-    const oneWeekMs = 7 * 86400000;
-    const files = fs.readdirSync(sessDir).filter(f => {
-      if (!f.endsWith('.jsonl')) return false;
-      try { return fs.statSync(path.join(sessDir, f)).mtimeMs > now - oneWeekMs; } catch { return false; }
-    });
-
-    const perModel5h = {};
-    const perModelWeek = {};
-    const recentMessages = [];
-
-    for (const file of files) {
-      const lines = fs.readFileSync(path.join(sessDir, file), 'utf8').split('\n');
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        try {
-          const d = JSON.parse(line);
-          if (d.type !== 'message') continue;
-          const msg = d.message;
-          if (!msg || !msg.usage) continue;
-          const ts = d.timestamp ? new Date(d.timestamp).getTime() : 0;
-          if (!ts) continue;
-          const model = msg.model || 'unknown';
-          const inTok = (msg.usage.input || 0) + (msg.usage.cacheRead || 0) + (msg.usage.cacheWrite || 0);
-          const outTok = msg.usage.output || 0;
-          const cost = msg.usage.cost ? msg.usage.cost.total || 0 : 0;
-
-          if (now - ts < fiveHoursMs) {
-            if (!perModel5h[model]) perModel5h[model] = { input: 0, output: 0, cost: 0, calls: 0 };
-            perModel5h[model].input += inTok;
-            perModel5h[model].output += outTok;
-            perModel5h[model].cost += cost;
-            perModel5h[model].calls++;
-          }
-          if (now - ts < oneWeekMs) {
-            if (!perModelWeek[model]) perModelWeek[model] = { input: 0, output: 0, cost: 0, calls: 0 };
-            perModelWeek[model].input += inTok;
-            perModelWeek[model].output += outTok;
-            perModelWeek[model].cost += cost;
-            perModelWeek[model].calls++;
-          }
-          if (now - ts < fiveHoursMs) {
-            recentMessages.push({ ts, model, input: inTok, output: outTok, cost });
-          }
-        } catch {}
-      }
-    }
-
-    recentMessages.sort((a, b) => b.ts - a.ts);
+    const { perModel5h, perModelWeek, recentMessages } = collectUsageFromSessionDirs(getAgentSessionDirs(), now);
 
     const estimatedLimits = { opus: 88000, sonnet: 220000 };
 
