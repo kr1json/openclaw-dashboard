@@ -55,6 +55,33 @@ A beautiful, secure, real-time monitoring dashboard for OpenClaw agents. Track s
 - 🛡️ **Security Hardened** - HSTS, CSP, rate limiting, timing-safe comparisons, audit logging
 - 📦 **No External Dependencies** - Pure Node.js, no database required
 
+## 🧩 Fork Update Notes (from upstream baseline)
+
+This repository started from the upstream project:
+- Upstream: `tugcantopaloglu/openclaw-dashboard`
+- Fork: `kr1json/openclaw-dashboard`
+
+Additional updates currently included in this fork:
+
+- **Cron UX improvements**
+  - Dedicated `Cron` sidebar menu/page
+  - Per-job cards (one job per row)
+  - Hover-grow interaction on each cron row
+  - Per-row immediate action feedback (`processing/success/error`)
+  - Manual run and enable/disable controls with clearer status response
+
+- **Cron route/id handling fix**
+  - Correct handling of cron IDs containing `:` (e.g. `waveunse1:daily-fortunes-db`)
+  - URL-safe request handling for toggle/run actions
+
+- **Cross-agent session aggregation**
+  - Overview/activity now aggregates sessions across all agents under `.openclaw/agents/*/sessions`
+
+- **Tests added for forked changes**
+  - `cron-utils` and cron route parser tests (`node --test`)
+
+> Note: `❌` in Cron status reflects the scheduler's `lastStatus=error` result from the last run, not merely button click success.
+
 ## 🚀 Quick Start
 
 ```bash
