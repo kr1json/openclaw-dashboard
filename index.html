@@ -2206,133 +2206,13 @@ body.sidebar-pinned .main {
   </div>
 </div>
 
+<script src="/public/js/common-api.js"></script>
+<script src="/public/js/ui-common.js"></script>
+<script src="/public/js/sessions-ui.js"></script>
+<script src="/public/js/system-ui.js"></script>
 <script src="/public/js/cron-ui.js"></script>
 <script>
-const API_BASE = window.location.pathname.replace(/\/+$/, '');
-const TOKEN_KEY = 'dashboardToken';
-const TOKEN_EXPIRY_KEY = 'dashboardTokenExpiry';
-const TOKEN_LIFETIME = 24 * 60 * 60 * 1000;
-const REMEMBER_ME_LIFETIME = 3 * 60 * 60 * 1000;
-
-function getStoredToken() {
-  let token = sessionStorage.getItem(TOKEN_KEY);
-  let expiry = sessionStorage.getItem(TOKEN_EXPIRY_KEY);
-  
-  if (!token || !expiry) {
-    token = localStorage.getItem(TOKEN_KEY);
-    expiry = localStorage.getItem(TOKEN_EXPIRY_KEY);
-  }
-  
-  if (token && expiry) {
-    if (Date.now() < parseInt(expiry)) {
-      return token;
-    }
-    clearStoredToken();
-  }
-  return null;
-}
-
-function setStoredToken(token, rememberMe = false) {
-  if (rememberMe) {
-    const expiry = Date.now() + REMEMBER_ME_LIFETIME;
-    localStorage.setItem(TOKEN_KEY, token);
-    localStorage.setItem(TOKEN_EXPIRY_KEY, expiry.toString());
-    sessionStorage.removeItem(TOKEN_KEY);
-    sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
-  } else {
-    sessionStorage.setItem(TOKEN_KEY, token);
-    sessionStorage.setItem(TOKEN_EXPIRY_KEY, (Date.now() + TOKEN_LIFETIME).toString());
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(TOKEN_EXPIRY_KEY);
-  }
-}
-
-function clearStoredToken() {
-  localStorage.removeItem(TOKEN_KEY);
-  localStorage.removeItem(TOKEN_EXPIRY_KEY);
-  sessionStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(TOKEN_EXPIRY_KEY);
-}
-
-function showRegistrationForm() {
-  document.getElementById('authTitle').textContent = 'Create Account';
-  document.getElementById('authSubtitle').textContent = 'Set up your dashboard credentials';
-  document.getElementById('registerForm').style.display = 'block';
-  document.getElementById('loginForm').style.display = 'none';
-  document.getElementById('recoveryForm').style.display = 'none';
-  setTimeout(() => {
-    const el = document.getElementById('regUsername');
-    if (el) el.focus();
-  }, 100);
-}
-
-function showLoginForm() {
-  document.getElementById('authTitle').textContent = 'Dashboard Login';
-  document.getElementById('authSubtitle').textContent = 'Enter your credentials';
-  document.getElementById('registerForm').style.display = 'none';
-  document.getElementById('loginForm').style.display = 'block';
-  document.getElementById('recoveryForm').style.display = 'none';
-  document.getElementById('usernameInputContainer').style.display = 'block';
-  document.getElementById('passwordInputContainer').style.display = 'block';
-  document.getElementById('totpInputContainer').style.display = 'none';
-  setTimeout(() => {
-    const el = document.getElementById('username');
-    if (el) el.focus();
-  }, 100);
-}
-
-function showRecoveryForm() {
-  document.getElementById('authTitle').textContent = 'Reset Password';
-  document.getElementById('authSubtitle').textContent = 'Enter recovery token and new password';
-  document.getElementById('registerForm').style.display = 'none';
-  document.getElementById('loginForm').style.display = 'none';
-  document.getElementById('recoveryForm').style.display = 'block';
-  setTimeout(() => {
-    const el = document.getElementById('recoveryToken');
-    if (el) el.focus();
-  }, 100);
-}
-
-function calculatePasswordStrength(password) {
-  let strength = 0;
-  if (password.length >= 8) strength += 25;
-  if (password.length >= 12) strength += 15;
-  if (/[a-z]/.test(password)) strength += 15;
-  if (/[A-Z]/.test(password)) strength += 15;
-  if (/[0-9]/.test(password)) strength += 15;
-  if (/[^a-zA-Z0-9]/.test(password)) strength += 15;
-  return Math.min(strength, 100);
-}
-
-if (typeof document !== 'undefined') {
-  document.addEventListener('DOMContentLoaded', () => {
-    const regPassword = document.getElementById('regPassword');
-    const strengthBar = document.getElementById('passwordStrengthBar');
-    const strengthText = document.getElementById('passwordStrengthText');
-    
-    if (regPassword && strengthBar && strengthText) {
-      regPassword.addEventListener('input', (e) => {
-        const password = e.target.value;
-        const strength = calculatePasswordStrength(password);
-        strengthBar.style.width = strength + '%';
-        
-        if (strength < 40) {
-          strengthBar.style.background = 'var(--red)';
-          strengthText.textContent = 'Weak password';
-          strengthText.style.color = 'var(--red)';
-        } else if (strength < 70) {
-          strengthBar.style.background = 'var(--yellow)';
-          strengthText.textContent = 'Medium strength';
-          strengthText.style.color = 'var(--yellow)';
-        } else {
-          strengthBar.style.background = 'var(--green)';
-          strengthText.textContent = 'Strong password';
-          strengthText.style.color = 'var(--green)';
-        }
-      });
-    }
-  });
-}
+/* moved to /public/js/common-api.js and /public/js/ui-common.js */
 
 async function handleRegister(event) {
   event.preventDefault();
@@ -2570,98 +2450,9 @@ async function handleChangePassword(event) {
   return false;
 }
 
-async function handleLogout() {
-  if (!confirm('Are you sure you want to logout?')) return;
-  
-  try {
-    await authFetch(API_BASE + '/api/auth/logout', { method: 'POST' });
-  } catch (e) {
-  }
-  
-  clearStoredToken();
-  location.reload();
-}
+/* moved to /public/js/sessions-ui.js */
 
-function showApp() {
-  document.getElementById('loginPage').style.display = 'none';
-  document.getElementById('mainApp').style.display = 'flex';
-  fetchData();
-  fetchNewData();
-  fetchHealthHistory();
-  fetchMemoryFiles();
-  fetchKeyFiles();
-  checkMFAStatus();
-  
-  if (localStorage.getItem('usageAutoRefresh') === '1') {
-    const cb = document.getElementById('usageAutoRefresh');
-    if (cb) { cb.checked = true; toggleUsageAutoRefresh(true, true); }
-  }
-  setInterval(fetchData, 5000);
-  setInterval(fetchNewData, 15000);
-  setInterval(fetchHealthHistory, 60000);
-  setInterval(fetchMemoryFiles, 30000);
-  setInterval(fetchKeyFiles, 30000);
-}
-
-function showLogin() {
-  document.getElementById('loginPage').style.display = 'flex';
-  document.getElementById('mainApp').style.display = 'none';
-}
-
-async function checkAuth() {
-  try {
-    const statusRes = await fetch(API_BASE + '/api/auth/status');
-    const statusData = await statusRes.json();
-    
-    const token = getStoredToken();
-    
-    if (token) {
-      const verifyRes = await fetch(API_BASE + '/api/sessions', {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
-      if (verifyRes.ok) {
-        showApp();
-        return;
-      } else {
-        clearStoredToken();
-      }
-    }
-    
-    if (statusData.registered === false) {
-      showRegistrationForm();
-      showLogin();
-    } else {
-      showLoginForm();
-      showLogin();
-    }
-  } catch (err) {
-    showLoginForm();
-    showLogin();
-  }
-}
-
-function authFetch(url, options = {}) {
-  const token = getStoredToken();
-  if (!token) {
-    showLogin();
-    throw new Error('Not authenticated');
-  }
-  
-  options.headers = options.headers || {};
-  options.headers['Authorization'] = `Bearer ${token}`;
-  if (typeof options.cache === 'undefined') {
-    options.cache = 'no-store';
-  }
-  
-  return fetch(url, options).then(res => {
-    if (res.status === 401) {
-      clearStoredToken();
-      showLogin();
-      throw new Error('Session expired');
-    }
-    return res;
-  });
-}
+/* moved to /public/js/sessions-ui.js and /public/js/common-api.js */
 
 const qrcodegen = (function() {
   'use strict';
@@ -2954,34 +2745,7 @@ const qrcodegen = (function() {
   return {QrCode, QrSegment};
 })();
 
-async function checkMFAStatus() {
-  try {
-    const res = await authFetch(API_BASE + '/api/auth/mfa-status');
-    const data = await res.json();
-    const enabled = data.enabled;
-    
-    const indicator = document.getElementById('mfaStatusIndicator');
-    if (enabled) {
-      indicator.textContent = '🔒 MFA Enabled';
-      indicator.style.background = 'rgba(16,185,129,0.15)';
-      indicator.style.color = 'var(--green)';
-      indicator.style.border = '1px solid rgba(16,185,129,0.3)';
-      document.getElementById('mfaEnabledView').style.display = 'block';
-      document.getElementById('mfaDisabledView').style.display = 'none';
-    } else {
-      indicator.textContent = '⚠️ MFA Disabled';
-      indicator.style.background = 'rgba(245,158,11,0.15)';
-      indicator.style.color = 'var(--yellow)';
-      indicator.style.border = '1px solid rgba(245,158,11,0.3)';
-      document.getElementById('mfaEnabledView').style.display = 'none';
-      document.getElementById('mfaDisabledView').style.display = 'block';
-    }
-    indicator.style.display = 'block';
-    document.getElementById('mfaSetupView').style.display = 'none';
-  } catch (err) {
-    console.error('Failed to check MFA status:', err);
-  }
-}
+/* moved to /public/js/system-ui.js */
 
 function generateQRCode(text) {
   const qr = qrcodegen.QrCode.encodeText(text, qrcodegen.QrCode.Ecc.MEDIUM);

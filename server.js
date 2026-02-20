@@ -11,6 +11,9 @@ const crypto = require('crypto');
 const { collectUsageFromSessionDirs } = require('./usage-utils');
 const { collectCostFromSessionDirs } = require('./cost-utils');
 const { handleCronRoutes } = require('./routes/cron-routes');
+const { handleAuthRoutes } = require('./routes/auth-routes');
+const { handleSystemRoutes } = require('./routes/system-routes');
+const { createAuthMiddleware } = require('./middleware/auth-middleware');
 const cronService = require('./services/cron-service');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT || '7000');
@@ -308,56 +311,13 @@ function httpsEnforcement(req, res) {
   return false;
 }
 
-function isAuthenticated(req) {
-  const authHeader = req.headers.authorization;
-  let token = null;
-  if (authHeader && authHeader.startsWith('Bearer ')) {
-    token = authHeader.substring(7);
-  } else {
-    const url = new URL(req.url, 'http://localhost');
-    token = url.searchParams.get('token');
-  }
-  if (!token) return false;
-  
-  const session = sessions.get(token);
-  if (!session) return false;
-  
-  const now = Date.now();
-  if (now > session.expiresAt) {
-    sessions.delete(token);
-    return false;
-  }
-  
-  if (!session.rememberMe) {
-    if (now - session.lastActivity > SESSION_ACTIVITY_TIMEOUT) {
-      sessions.delete(token);
-      return false;
-    }
-    session.lastActivity = now;
-  }
-  
-  return true;
-}
-
-function requireAuth(req, res) {
-  const ip = getClientIP(req);
-  const limitCheck = checkRateLimit(ip);
-  if (limitCheck.blocked) {
-    setSecurityHeaders(res);
-    res.writeHead(429, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Too many failed attempts', retryAfter: limitCheck.remainingSeconds }));
-    return false;
-  }
-  
-  if (!isAuthenticated(req)) {
-    const sanitizedUrl = req.url.replace(/token=[^&]+/g, 'token=REDACTED');
-    setSecurityHeaders(res);
-    res.writeHead(401, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Unauthorized' }));
-    return false;
-  }
-  return true;
-}
+const { isAuthenticated, requireAuth } = createAuthMiddleware({
+  sessions,
+  SESSION_ACTIVITY_TIMEOUT,
+  checkRateLimit,
+  getClientIP,
+  setSecurityHeaders,
+});
 
 function getGitRepos() {
   const repos = [];
@@ -1586,357 +1546,29 @@ const server = http.createServer((req, res) => {
     }
   }
 
-  if (req.url === '/api/auth/status') {
-    const creds = getCredentials();
-    const registered = !!creds;
-    const loggedIn = isAuthenticated(req);
-    setSameSiteCORS(req, res);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ registered, loggedIn }));
-    return;
-  }
-
-  if (req.url === '/api/auth/register' && req.method === 'POST') {
-    const creds = getCredentials();
-    if (creds) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Already registered' }));
-      return;
-    }
-
-    let body = '';
-    req.on('data', chunk => { body += chunk; if (body.length > 2048) req.destroy(); });
-    req.on('end', () => {
-      try {
-        const ip = getClientIP(req);
-        const { username, password } = JSON.parse(body);
-        if (!username || !password) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Username and password required' }));
-          return;
-        }
-
-        const pwdError = validatePassword(password);
-        if (pwdError) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: pwdError }));
-          return;
-        }
-
-        const { hash, salt } = hashPassword(password);
-        const newCreds = { username, passwordHash: hash, salt, iterations: 100000 };
-        saveCredentials(newCreds);
-
-        const sessionToken = createSession(username, ip, false);
-        clearFailedAuth(ip);
-        auditLog('register', ip, { username });
-        setSameSiteCORS(req, res);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, sessionToken }));
-      } catch (e) {
-        console.error('Registration error:', e);
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Bad request' }));
-      }
-    });
-    return;
-  }
-
-  if (req.url === '/api/auth/login' && req.method === 'POST') {
-    const limitCheck = checkRateLimit(ip);
-    if (limitCheck.softLocked) {
-      auditLog('login_locked', ip, { remainingSeconds: limitCheck.remainingSeconds, hardLocked: limitCheck.blocked });
-      res.writeHead(429, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Too many failed login attempts', lockoutRemaining: limitCheck.remainingSeconds }));
-      return;
-    }
-
-    let body = '';
-    req.on('data', chunk => { body += chunk; if (body.length > 2048) req.destroy(); });
-    req.on('end', () => {
-      try {
-        const { username, password, totpCode, rememberMe } = JSON.parse(body);
-        const creds = getCredentials();
-        if (!creds) {
-          recordFailedAuth(ip);
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'No account registered' }));
-          return;
-        }
-
-        if (username !== creds.username) {
-          recordFailedAuth(ip);
-          auditLog('login_failed', ip, { username });
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid username or password' }));
-          return;
-        }
-
-        if (!verifyPassword(password, creds.passwordHash, creds.salt)) {
-          recordFailedAuth(ip);
-          auditLog('login_failed', ip, { username });
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid username or password' }));
-          return;
-        }
-
-        if (MFA_SECRET || creds.mfaSecret) {
-          const secret = creds.mfaSecret || MFA_SECRET;
-          if (!totpCode) {
-            setSameSiteCORS(req, res);
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ requiresMfa: true }));
-            return;
-          }
-
-          if (!verifyTOTP(secret, totpCode)) {
-            recordFailedAuth(ip);
-            auditLog('login_mfa_failed', ip, { username });
-            res.writeHead(401, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: 'Invalid TOTP code' }));
-            return;
-          }
-        }
-
-        const sessionToken = createSession(username, ip, rememberMe);
-        clearFailedAuth(ip);
-        auditLog('login_success', ip, { username });
-        setSameSiteCORS(req, res);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, sessionToken }));
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Bad request' }));
-      }
-    });
-    return;
-  }
-
-  if (req.url === '/api/auth/logout' && req.method === 'POST') {
-    const authHeader = req.headers.authorization;
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      const token = authHeader.substring(7);
-      sessions.delete(token);
-    }
-    auditLog('logout', ip);
-    setSameSiteCORS(req, res);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ success: true }));
-    return;
-  }
-
-  if (req.url === '/api/auth/reset-password' && req.method === 'POST') {
-    let body = '';
-    req.on('data', chunk => { body += chunk; if (body.length > 2048) req.destroy(); });
-    req.on('end', () => {
-      try {
-        const { recoveryToken, newPassword } = JSON.parse(body);
-        if (!safeCompare(recoveryToken, DASHBOARD_TOKEN)) {
-          recordFailedAuth(ip);
-          auditLog('password_reset_failed', ip);
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid recovery token' }));
-          return;
-        }
-
-        const pwdError = validatePassword(newPassword);
-        if (pwdError) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: pwdError }));
-          return;
-        }
-
-        const creds = getCredentials();
-        if (!creds) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'No account registered' }));
-          return;
-        }
-
-        const { hash, salt } = hashPassword(newPassword);
-        creds.passwordHash = hash;
-        creds.salt = salt;
-        saveCredentials(creds);
-
-        sessions.clear();
-
-        clearFailedAuth(ip);
-        auditLog('password_reset_success', ip);
-        setSameSiteCORS(req, res);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Bad request' }));
-      }
-    });
-    return;
-  }
-
-  if (req.url === '/api/auth/change-password' && req.method === 'POST') {
-    if (!requireAuth(req, res)) return;
-    setSameSiteCORS(req, res);
-
-    let body = '';
-    req.on('data', chunk => { body += chunk; if (body.length > 2048) req.destroy(); });
-    req.on('end', () => {
-      try {
-        const { currentPassword, newPassword } = JSON.parse(body);
-        const creds = getCredentials();
-        if (!creds) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'No account registered' }));
-          return;
-        }
-
-        if (!verifyPassword(currentPassword, creds.passwordHash, creds.salt)) {
-          recordFailedAuth(ip);
-          auditLog('password_change_failed', ip);
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Current password is incorrect' }));
-          return;
-        }
-
-        const pwdError = validatePassword(newPassword);
-        if (pwdError) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: pwdError }));
-          return;
-        }
-
-        const { hash, salt } = hashPassword(newPassword);
-        creds.passwordHash = hash;
-        creds.salt = salt;
-        saveCredentials(creds);
-
-        const authHeader = req.headers.authorization;
-        const currentToken = authHeader ? authHeader.substring(7) : null;
-        for (const [token, sess] of sessions.entries()) {
-          if (token !== currentToken) sessions.delete(token);
-        }
-
-        clearFailedAuth(ip);
-        auditLog('password_change_success', ip);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Bad request' }));
-      }
-    });
-    return;
-  }
-
-  if (req.url === '/api/auth/mfa-status') {
-    if (!requireAuth(req, res)) return;
-    setSameSiteCORS(req, res);
-    const creds = getCredentials();
-    const enabled = !!(creds?.mfaSecret || MFA_SECRET);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ enabled }));
-    return;
-  }
-
-  if (req.url === '/api/auth/setup-mfa' && req.method === 'POST') {
-    if (!requireAuth(req, res)) return;
-    setSameSiteCORS(req, res);
-    
-    try {
-      const secret = base32Encode(crypto.randomBytes(20));
-      const otpauth_uri = `otpauth://totp/OpenClaw:Dashboard?secret=${secret}&issuer=OpenClaw&algorithm=SHA1&digits=6&period=30`;
-      pendingMfaSecrets.set(getClientIP(req), { secret, createdAt: Date.now() });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ secret, otpauth_uri }));
-    } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: e.message }));
-    }
-    return;
-  }
-
-  if (req.url === '/api/auth/confirm-mfa' && req.method === 'POST') {
-    if (!requireAuth(req, res)) return;
-    setSameSiteCORS(req, res);
-    
-    let body = '';
-    req.on('data', chunk => { body += chunk; if (body.length > 1024) req.destroy(); });
-    req.on('end', () => {
-      try {
-        const { totpCode } = JSON.parse(body);
-        const ip = getClientIP(req);
-        const pending = pendingMfaSecrets.get(ip);
-        
-        if (!pending || Date.now() - pending.createdAt > 10 * 60 * 1000) {
-          pendingMfaSecrets.delete(ip);
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'MFA setup expired. Please try again.' }));
-          return;
-        }
-        
-        if (!totpCode || !verifyTOTP(pending.secret, totpCode)) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid TOTP code. Please try again.' }));
-          return;
-        }
-        
-        const creds = getCredentials();
-        if (creds) {
-          creds.mfaSecret = pending.secret;
-          saveCredentials(creds);
-        }
-        pendingMfaSecrets.delete(ip);
-        auditLog('mfa_setup', ip);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: e.message }));
-      }
-    });
-    return;
-  }
-
-  if (req.url === '/api/auth/disable-mfa' && req.method === 'POST') {
-    if (!requireAuth(req, res)) return;
-    setSameSiteCORS(req, res);
-    
-    let body = '';
-    req.on('data', chunk => { body += chunk; if (body.length > 1024) req.destroy(); });
-    req.on('end', () => {
-      try {
-        const { totpCode } = JSON.parse(body);
-        
-        const creds = getCredentials();
-        const mfaSecret = creds?.mfaSecret || MFA_SECRET;
-        
-        if (!mfaSecret) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'MFA is not enabled' }));
-          return;
-        }
-        
-        if (!totpCode || !verifyTOTP(mfaSecret, totpCode)) {
-          auditLog('mfa_disable_failed', getClientIP(req));
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Invalid TOTP code' }));
-          return;
-        }
-        
-        if (creds) {
-          delete creds.mfaSecret;
-          saveCredentials(creds);
-        }
-        
-        auditLog('mfa_disabled', getClientIP(req));
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
-      } catch (e) {
-        res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Bad request' }));
-      }
-    });
-    return;
-  }
+  if (handleAuthRoutes(req, res, {
+    getCredentials,
+    isAuthenticated,
+    setSameSiteCORS,
+    validatePassword,
+    hashPassword,
+    saveCredentials,
+    createSession,
+    clearFailedAuth,
+    auditLog,
+    getClientIP,
+    checkRateLimit,
+    recordFailedAuth,
+    verifyPassword,
+    verifyTOTP,
+    sessions,
+    safeCompare,
+    DASHBOARD_TOKEN,
+    requireAuth,
+    base32Encode,
+    pendingMfaSecrets,
+    MFA_SECRET,
+  })) return;
 
   if (req.url === '/' || req.url === '/index.html') {
     try {
@@ -2197,11 +1829,21 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify(getGitActivity()));
       return;
     }
-    if (req.url === '/api/services') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(getServicesStatus()));
-      return;
-    }
+    if (handleSystemRoutes(req, res, {
+      auditLog,
+      getClientIP,
+      getServicesStatus,
+      WORKSPACE_DIR,
+      costCacheState: {
+        clear: () => {
+          costCache = null;
+          usageCache = null;
+          costCacheTime = 0;
+          usageCacheTime = 0;
+        }
+      }
+    })) return;
+
     if (req.url === '/api/memory') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(getMemoryFiles()));
@@ -2240,197 +1882,6 @@ const server = http.createServer((req, res) => {
     if (req.url === '/api/response-time') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ avgSeconds: getAvgResponseTime() }));
-      return;
-    }
-    if (req.url.startsWith('/api/logs?')) {
-      try {
-        const params = new URL(req.url, 'http://localhost').searchParams;
-        const requested = params.get('service') || 'openclaw';
-        const allowedServices = ['openclaw', 'agent-dashboard', 'openclaw-dashboard', 'openclaw-gateway', 'tailscaled', 'sshd', 'nginx'];
-        if (!allowedServices.includes(requested)) {
-          res.writeHead(400, { 'Content-Type': 'text/plain' });
-          res.end('Invalid service name');
-          return;
-        }
-        if (process.platform !== 'linux') {
-          res.writeHead(200, { 'Content-Type': 'text/plain' });
-          res.end('Logs are currently implemented for Linux host.');
-          return;
-        }
-        const lines = Math.min(Math.max(parseInt(params.get('lines')) || 100, 1), 1000);
-        const unitAliases = {
-          openclaw: ['openclaw-gateway', 'openclaw'],
-          'agent-dashboard': ['openclaw-dashboard', 'agent-dashboard'],
-          'openclaw-dashboard': ['openclaw-dashboard', 'agent-dashboard'],
-          'openclaw-gateway': ['openclaw-gateway', 'openclaw'],
-          tailscaled: ['tailscaled'],
-          sshd: ['sshd'],
-          nginx: ['nginx']
-        };
-        const candidates = unitAliases[requested] || [requested];
-        let logs = '';
-        for (const unit of candidates) {
-          try {
-            logs = execSync(`journalctl -u ${unit} --no-pager -n ${lines} -o short 2>/dev/null`, { encoding: 'utf8', timeout: 10000 }).trim();
-            if (logs && !logs.includes('-- No entries --')) {
-              logs = `[source: journalctl -u ${unit}]\n` + logs;
-              break;
-            }
-            logs = '';
-          } catch {}
-        }
-        if (!logs && (requested === 'agent-dashboard' || requested === 'openclaw-dashboard')) {
-          try {
-            const outPath = path.join(os.homedir(), '.pm2', 'logs', 'openclaw-dashboard-out.log');
-            const errPath = path.join(os.homedir(), '.pm2', 'logs', 'openclaw-dashboard-error.log');
-            const tail = (p) => {
-              if (!fs.existsSync(p)) return '';
-              const txt = fs.readFileSync(p, 'utf8');
-              const arr = txt.split('\n');
-              return arr.slice(Math.max(0, arr.length - lines)).join('\n').trim();
-            };
-            const outTail = tail(outPath);
-            const errTail = tail(errPath);
-            const chunks = [];
-            if (outTail) chunks.push('[out]\n' + outTail);
-            if (errTail) chunks.push('[error]\n' + errTail);
-            if (chunks.length) logs = `[source: pm2 log files]\n` + chunks.join('\n\n');
-          } catch {}
-        }
-        if (!logs) logs = 'No logs available';
-        res.writeHead(200, { 'Content-Type': 'text/plain' });
-        res.end(logs);
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'text/plain' });
-        res.end('Error fetching logs');
-      }
-      return;
-    }
-    if (req.url === '/api/action/restart-openclaw' && req.method === 'POST') {
-      try {
-        auditLog('action_restart_openclaw', ip);
-        exec('systemctl restart openclaw', (err) => {});
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: e.message }));
-      }
-      return;
-    }
-    if (req.url === '/api/action/restart-dashboard' && req.method === 'POST') {
-      try {
-        auditLog('action_restart_dashboard', ip);
-        setTimeout(() => {
-          exec('systemctl restart agent-dashboard', (err) => {});
-        }, 2000);
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, message: 'Restarting in 2 seconds...' }));
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: e.message }));
-      }
-      return;
-    }
-    if (req.url === '/api/action/clear-cache' && req.method === 'POST') {
-      try {
-        costCache = null;
-        usageCache = null;
-        costCacheTime = 0;
-        usageCacheTime = 0;
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: e.message }));
-      }
-      return;
-    }
-    if (req.url === '/api/action/restart-tailscale' && req.method === 'POST') {
-      auditLog('action_restart_tailscale', ip);
-      exec('systemctl restart tailscaled', (err) => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: !err, error: err?.message }));
-      });
-      return;
-    }
-    if (req.url === '/api/action/update-openclaw' && req.method === 'POST') {
-      auditLog('action_update_openclaw', ip);
-      exec('npm update -g openclaw', { timeout: 120000 }, (err, stdout) => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: !err, output: stdout?.trim(), error: err?.message }));
-      });
-      return;
-    }
-    if (req.url === '/api/action/kill-tmux' && req.method === 'POST') {
-      exec('tmux kill-session -t claude-persistent 2>/dev/null; echo ok', (err, stdout) => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
-      });
-      return;
-    }
-    if (req.url === '/api/action/gc' && req.method === 'POST') {
-      const projDir = path.join(WORKSPACE_DIR, 'projects');
-      exec(`if [ -d "${projDir}" ]; then for d in ${projDir}/*/; do cd "$d" && git gc --quiet 2>/dev/null; done; fi; cd ${WORKSPACE_DIR} && git gc --quiet 2>/dev/null; echo ok`, (err) => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true }));
-      });
-      return;
-    }
-    if (req.url === '/api/action/check-update' && req.method === 'POST') {
-      exec('npm outdated -g openclaw 2>/dev/null || echo "up to date"', { timeout: 30000 }, (err, stdout) => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, output: (stdout || '').trim() || 'All packages up to date' }));
-      });
-      return;
-    }
-    if (req.url === '/api/action/sys-update' && req.method === 'POST') {
-      auditLog('action_sys_update', ip);
-      exec('apt update -qq && apt upgrade -y -qq 2>&1 | tail -5', { timeout: 300000 }, (err, stdout) => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: !err, output: (stdout || '').trim(), error: err?.message }));
-      });
-      return;
-    }
-    if (req.url === '/api/action/disk-cleanup' && req.method === 'POST') {
-      exec('apt autoremove -y -qq 2>/dev/null; apt clean 2>/dev/null; journalctl --vacuum-time=7d 2>/dev/null; echo "Cleanup done"', { timeout: 60000 }, (err, stdout) => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: true, output: (stdout || '').trim() }));
-      });
-      return;
-    }
-    if (req.url === '/api/action/restart-claude' && req.method === 'POST') {
-      exec(`tmux kill-session -t claude-persistent 2>/dev/null; sleep 1; tmux new-session -d -s claude-persistent -x 200 -y 60 && tmux send-keys -t claude-persistent "cd ${WORKSPACE_DIR} && claude" Enter && echo "Claude session started"`, { timeout: 20000 }, (err, stdout) => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ success: !err, output: (stdout || '').trim() }));
-      });
-      return;
-    }
-    if (req.url === '/api/tailscale') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      try {
-        const { execSync } = require('child_process');
-        const statusJson = execSync('tailscale status --json 2>/dev/null', { encoding: 'utf8', timeout: 5000 });
-        const status = JSON.parse(statusJson);
-        const self = status.Self || {};
-        const peers = Object.values(status.Peer || {}).filter(p => p.Online).length;
-        let routes = [];
-        try {
-          const serveStatus = execSync('tailscale serve status 2>/dev/null', { encoding: 'utf8', timeout: 3000 });
-          if (serveStatus && !serveStatus.includes('No serve config')) {
-            routes = serveStatus.split('\n').filter(l => l.includes('http')).map(l => l.trim());
-          }
-        } catch {}
-        res.end(JSON.stringify({
-          hostname: self.HostName || 'unknown',
-          ip: self.TailscaleIPs?.[0] || 'unknown',
-          online: self.Online || false,
-          peers,
-          routes
-        }));
-      } catch (e) {
-        res.end(JSON.stringify({ error: 'Tailscale not available', hostname: '--', ip: '--', online: false, peers: 0, routes: [] }));
-      }
       return;
     }
     if (req.url === '/api/lifetime-stats') {
