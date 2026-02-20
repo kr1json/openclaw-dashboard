@@ -6,10 +6,12 @@ const path = require('path');
 const os = require('os');
 const { exec } = require('child_process');
 const crypto = require('crypto');
-const { toCronViewModel } = require('./cron-utils');
-const { parseCronRequest, parseCronRunsRequest } = require('./cron-route-utils');
+/* cron utils moved to service layer */
+/* cron route parsing moved to routes/cron-routes */
 const { collectUsageFromSessionDirs } = require('./usage-utils');
 const { collectCostFromSessionDirs } = require('./cost-utils');
+const { handleCronRoutes } = require('./routes/cron-routes');
+const cronService = require('./services/cron-service');
 
 const PORT = parseInt(process.env.DASHBOARD_PORT || '7000');
 const OPENCLAW_DIR = process.env.OPENCLAW_DIR || path.join(os.homedir(), '.openclaw');
@@ -44,6 +46,7 @@ function getAgentSessionDirs() {
   return dirs;
 }
 const cronFile = path.join(OPENCLAW_DIR, 'cron', 'jobs.json');
+cronService.initCronService(OPENCLAW_DIR, WORKSPACE_DIR);
 const dataDir = path.join(WORKSPACE_DIR, 'data');
 const memoryDir = path.join(WORKSPACE_DIR, 'memory');
 const memoryMdPath = path.join(WORKSPACE_DIR, 'MEMORY.md');
@@ -1044,29 +1047,7 @@ function formatLiveEvent(data) {
   return null;
 }
 
-function getCronJobs() {
-  try {
-    if (!fs.existsSync(cronFile)) return [];
-    const data = JSON.parse(fs.readFileSync(cronFile, 'utf8'));
-    return (data.jobs || []).map(toCronViewModel);
-  } catch { return []; }
-}
-
-function getCronRuns(jobId, limit = 30) {
-  try {
-    const { execFileSync } = require('child_process');
-    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 30, 1), 100);
-    const out = execFileSync('openclaw', ['cron', 'runs', '--id', jobId, '--limit', String(safeLimit)], {
-      encoding: 'utf8',
-      timeout: 30000
-    }).trim();
-    if (!out) return [];
-    const parsed = JSON.parse(out);
-    return Array.isArray(parsed?.entries) ? parsed.entries : [];
-  } catch (e) {
-    return { error: e.message || 'Failed to fetch cron runs' };
-  }
-}
+/* cron getters moved to services/cron-service */
 
 function getGitActivity() {
   try {
@@ -1586,6 +1567,23 @@ const server = http.createServer((req, res) => {
     res.writeHead(204);
     res.end();
     return;
+  }
+
+  if (req.url && req.url.startsWith('/public/')) {
+    try {
+      const filePath = path.join(__dirname, req.url);
+      if (!filePath.startsWith(path.join(__dirname, 'public'))) {
+        res.writeHead(403); res.end('Forbidden'); return;
+      }
+      if (!fs.existsSync(filePath)) { res.writeHead(404); res.end('Not found'); return; }
+      const ext = path.extname(filePath);
+      const contentType = ext === '.js' ? 'application/javascript' : 'text/plain';
+      res.writeHead(200, { 'Content-Type': contentType });
+      res.end(fs.readFileSync(filePath));
+      return;
+    } catch {
+      res.writeHead(500); res.end('Static file error'); return;
+    }
   }
 
   if (req.url === '/api/auth/status') {
@@ -2190,25 +2188,9 @@ const server = http.createServer((req, res) => {
       res.end(JSON.stringify(messages));
       return;
     }
-    if (req.url === '/api/crons') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(getCronJobs()));
-      return;
-    }
-    if (req.url.startsWith('/api/cron/') && req.method === 'GET') {
-      const parsedRuns = parseCronRunsRequest(req.url);
-      if (parsedRuns) {
-        const params = new URL(req.url, 'http://localhost').searchParams;
-        const result = getCronRuns(parsedRuns.id, params.get('limit'));
-        if (result && !Array.isArray(result) && result.error) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify(result));
-          return;
-        }
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(result));
-        return;
-      }
+    if (req.url.startsWith('/api/cron')) {
+      const handled = handleCronRoutes(req, res, auditLog, getClientIP);
+      if (handled) return;
     }
     if (req.url === '/api/git') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -2619,38 +2601,7 @@ const server = http.createServer((req, res) => {
       });
       return;
     }
-    if (req.url.startsWith('/api/cron/') && req.method === 'POST') {
-      try {
-        const parsed = parseCronRequest(req.url);
-        if (!parsed) { res.writeHead(400); res.end('Invalid cron request'); return; }
-        const { id, action } = parsed;
-
-        if (action === 'toggle') {
-          if (!fs.existsSync(cronFile)) throw new Error('No cron file');
-          const data = JSON.parse(fs.readFileSync(cronFile, 'utf8'));
-          const job = (data.jobs || []).find(j => j.id === id);
-          if (!job) throw new Error('Job not found');
-          job.enabled = !job.enabled;
-          fs.writeFileSync(cronFile, JSON.stringify(data, null, 2));
-          auditLog('cron_toggle', ip, { cronId: id, enabled: job.enabled });
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: true, enabled: job.enabled }));
-        } else if (action === 'run') {
-          const { execFile } = require('child_process');
-          execFile('openclaw', ['cron', 'run', id], { timeout: 60000 }, () => {});
-          auditLog('cron_run', ip, { cronId: id });
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ success: true }));
-        } else {
-          res.writeHead(404);
-          res.end('Not found');
-        }
-      } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: e.message }));
-      }
-      return;
-    }
+    // cron POST handlers moved to routes/cron-routes
     if (req.url === '/api/live' || req.url.startsWith('/api/live?')) {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
