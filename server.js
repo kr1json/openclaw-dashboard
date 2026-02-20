@@ -7,7 +7,7 @@ const os = require('os');
 const { exec } = require('child_process');
 const crypto = require('crypto');
 const { toCronViewModel } = require('./cron-utils');
-const { parseCronRequest } = require('./cron-route-utils');
+const { parseCronRequest, parseCronRunsRequest } = require('./cron-route-utils');
 const { collectUsageFromSessionDirs } = require('./usage-utils');
 const { collectCostFromSessionDirs } = require('./cost-utils');
 
@@ -1050,6 +1050,22 @@ function getCronJobs() {
     const data = JSON.parse(fs.readFileSync(cronFile, 'utf8'));
     return (data.jobs || []).map(toCronViewModel);
   } catch { return []; }
+}
+
+function getCronRuns(jobId, limit = 30) {
+  try {
+    const { execFileSync } = require('child_process');
+    const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 30, 1), 100);
+    const out = execFileSync('openclaw', ['cron', 'runs', '--id', jobId, '--limit', String(safeLimit)], {
+      encoding: 'utf8',
+      timeout: 30000
+    }).trim();
+    if (!out) return [];
+    const parsed = JSON.parse(out);
+    return Array.isArray(parsed?.entries) ? parsed.entries : [];
+  } catch (e) {
+    return { error: e.message || 'Failed to fetch cron runs' };
+  }
 }
 
 function getGitActivity() {
@@ -2178,6 +2194,21 @@ const server = http.createServer((req, res) => {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(getCronJobs()));
       return;
+    }
+    if (req.url.startsWith('/api/cron/') && req.method === 'GET') {
+      const parsedRuns = parseCronRunsRequest(req.url);
+      if (parsedRuns) {
+        const params = new URL(req.url, 'http://localhost').searchParams;
+        const result = getCronRuns(parsedRuns.id, params.get('limit'));
+        if (result && !Array.isArray(result) && result.error) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(result));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+        return;
+      }
     }
     if (req.url === '/api/git') {
       res.writeHead(200, { 'Content-Type': 'application/json' });

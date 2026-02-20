@@ -27,6 +27,7 @@ function formatCronSchedule(schedule = {}) {
 }
 
 function toCronViewModel(job = {}) {
+  const prompt = String(job.payload?.message || '').trim();
   return {
     id: job.id,
     name: job.name || String(job.id || '').substring(0, 8),
@@ -35,7 +36,9 @@ function toCronViewModel(job = {}) {
     lastStatus: job.state?.lastStatus || 'unknown',
     lastRunAt: job.state?.lastRunAtMs || 0,
     nextRunAt: job.state?.nextRunAtMs || 0,
-    lastDuration: job.state?.lastDurationMs || 0
+    lastDuration: job.state?.lastDurationMs || 0,
+    prompt,
+    promptPreview: prompt ? prompt.replace(/\s+/g, ' ').slice(0, 180) : ''
   };
 }
 

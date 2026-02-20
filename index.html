@@ -2168,8 +2168,8 @@ body.sidebar-pinned .main {
   </div>
 </div>
 
-<div class="session-modal-overlay" id="sessionModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:500;display:none;align-items:center;justify-content:center;" onclick="if(event.target===this)closeSessionModal()">
-  <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:16px;width:90%;max-width:700px;max-height:80vh;overflow:hidden;display:flex;flex-direction:column;">
+<div class="session-modal-overlay" id="sessionModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:500;display:none;align-items:center;justify-content:center;padding:24px;" onclick="if(event.target===this)closeSessionModal()">
+  <div style="background:var(--bg-secondary);border:1px solid var(--border);border-radius:16px;width:min(1200px,96vw);max-height:90vh;overflow:hidden;display:flex;flex-direction:column;">
     <div style="padding:20px 24px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
       <div>
         <h2 style="font-size:18px;font-weight:700;" id="modalTitle">Session</h2>
@@ -2179,7 +2179,7 @@ body.sidebar-pinned .main {
     </div>
     <div style="padding:20px 24px;display:grid;grid-template-columns:1fr 1fr;gap:16px;" id="modalStats"></div>
     <div style="padding:0 24px 12px;"><h3 style="font-size:13px;font-weight:600;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.1em;">Recent Messages</h3></div>
-    <div style="padding:0 24px 20px;overflow-y:auto;flex:1;max-height:400px;" id="modalMessages"></div>
+    <div style="padding:0 24px 20px;overflow-y:auto;flex:1;min-height:320px;" id="modalMessages"></div>
   </div>
 </div>
 
@@ -4713,18 +4713,20 @@ function renderCronJobs(crons = []) {
     const feedbackColor = ui.error ? 'var(--red)' : ui.message ? 'var(--green)' : 'var(--text-muted)';
     const feedbackText = ui.pending ? '처리 중…' : (ui.error ? `실패: ${ui.error}` : (ui.message || ''));
 
-    return `<div class="cron-job-row">
+    return `<div class="cron-job-row" onclick="window.openCronDetails('${c.id}')" style="cursor:pointer;">
       <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px;gap:8px;">
         <div style="min-width:0;">
           <div style="font-weight:700;font-size:13px;word-break:break-word;">${statusIcon} ${c.name}</div>
           <div class="mono" style="font-size:11px;color:var(--text-muted);margin-top:4px;word-break:break-all;">${c.id}</div>
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0;">
-          <button onclick="window.toggleCronJob('${c.id}')" ${isBusy ? 'disabled' : ''} style="padding:4px 10px;background:${toggleBg};color:${toggleColor};border:1px solid var(--border);border-radius:6px;font-size:11px;font-weight:600;cursor:${isBusy ? 'not-allowed' : 'pointer'};opacity:${isBusy ? '0.6' : '1'};">${isBusy ? '…' : (c.enabled ? 'ON' : 'OFF')}</button>
-          <button onclick="window.runCronJob('${c.id}')" ${isBusy ? 'disabled' : ''} style="padding:4px 10px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:${isBusy ? 'not-allowed' : 'pointer'};opacity:${isBusy ? '0.6' : '1'};">${isBusy ? 'Running…' : '▶ Run'}</button>
+          <button onclick="event.stopPropagation();window.openCronDetails('${c.id}')" style="padding:4px 10px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:pointer;">📄 Details</button>
+          <button onclick="event.stopPropagation();window.toggleCronJob('${c.id}')" ${isBusy ? 'disabled' : ''} style="padding:4px 10px;background:${toggleBg};color:${toggleColor};border:1px solid var(--border);border-radius:6px;font-size:11px;font-weight:600;cursor:${isBusy ? 'not-allowed' : 'pointer'};opacity:${isBusy ? '0.6' : '1'};">${isBusy ? '…' : (c.enabled ? 'ON' : 'OFF')}</button>
+          <button onclick="event.stopPropagation();window.runCronJob('${c.id}')" ${isBusy ? 'disabled' : ''} style="padding:4px 10px;background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);border-radius:6px;font-size:11px;cursor:${isBusy ? 'not-allowed' : 'pointer'};opacity:${isBusy ? '0.6' : '1'};">${isBusy ? 'Running…' : '▶ Run'}</button>
         </div>
       </div>
       <div class="mono" style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">${c.schedule || '--'}</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;">🧠 Prompt: ${escapeHtml(c.promptPreview || '(none)')}</div>
       <div style="font-size:11px;color:var(--text-muted);">Next: ${c.enabled ? nextAgo : 'disabled'} · Last run: ${lastAgo} · Duration: ${c.lastDuration ? (c.lastDuration / 1000).toFixed(1) + 's' : '--'}</div>
       <div style="font-size:11px;color:${feedbackColor};margin-top:6px;min-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${feedbackText}</div>
     </div>`;
@@ -4817,6 +4819,47 @@ window.runCronJob = async function(id) {
     setCronUiState(id, { pending: false, error: e.message || 'Unknown error' });
     renderCronJobs(latestCronJobs);
     sendNotification('Cron Run Failed', e.message || 'Unknown error');
+  }
+};
+
+window.openCronDetails = async function(id) {
+  const cron = (latestCronJobs || []).find(x => x.id === id);
+  const modal = document.getElementById('sessionModal');
+  if (!modal) return;
+
+  modal.querySelector('#modalTitle').textContent = `Cron: ${cron?.name || id}`;
+  modal.querySelector('#modalKey').textContent = id;
+  modal.querySelector('#modalStats').innerHTML = `
+    <div style="grid-column:1 / span 2;">
+      <div style="font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;">Prompt</div>
+      <pre style="white-space:pre-wrap;word-break:break-word;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12px;line-height:1.5;max-height:190px;overflow:auto;">${escapeHtml(cron?.prompt || '(no prompt)')}</pre>
+    </div>
+  `;
+
+  const messagesEl = modal.querySelector('#modalMessages');
+  messagesEl.innerHTML = '<div style="color:var(--text-muted);font-size:13px;">Loading cron runs...</div>';
+  modal.style.display = 'flex';
+
+  try {
+    const res = await authFetch(`/api/cron/${encodeURIComponent(id)}/runs?limit=20`);
+    const runs = await res.json();
+    if (!res.ok) throw new Error(runs?.error || 'Failed to load runs');
+
+    messagesEl.innerHTML = (runs || []).map((r, idx) => {
+      const statusIcon = r.status === 'ok' ? '✅' : r.status === 'error' ? '❌' : '⚪';
+      const runAt = r.runAtMs ? new Date(r.runAtMs).toLocaleString() : '-';
+      const duration = r.durationMs ? `${(r.durationMs / 1000).toFixed(1)}s` : '-';
+      const summary = escapeHtml(String(r.summary || r.error || '')).replace(/\n/g, '<br>');
+      return `<div style="padding:10px 0;border-bottom:${idx === runs.length - 1 ? 'none' : '1px solid var(--border)'};">
+        <div style="display:flex;justify-content:space-between;gap:8px;font-size:12px;">
+          <span>${statusIcon} <strong>${escapeHtml(r.status || '-')}</strong></span>
+          <span class="mono" style="color:var(--text-muted);">${escapeHtml(runAt)} · ${escapeHtml(duration)}</span>
+        </div>
+        <div style="margin-top:6px;font-size:12px;color:var(--text-secondary);line-height:1.5;">${summary || '<span style="color:var(--text-muted);">(no summary)</span>'}</div>
+      </div>`;
+    }).join('') || '<div style="color:var(--text-muted);font-size:13px;">No runs yet.</div>';
+  } catch (e) {
+    messagesEl.innerHTML = `<div style="color:var(--red);font-size:13px;">Failed to load cron runs: ${escapeHtml(e.message || 'Unknown error')}</div>`;
   }
 };
 

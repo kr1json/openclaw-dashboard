@@ -14,6 +14,9 @@ test('toCronViewModel includes run history and readable schedule', () => {
       lastRunAtMs: 1739923200000,
       nextRunAtMs: 1739926800000,
       lastDurationMs: 4500
+    },
+    payload: {
+      message: 'Do nightly sync and report summary to channel'
     }
   });
 
@@ -25,6 +28,8 @@ test('toCronViewModel includes run history and readable schedule', () => {
   assert.equal(row.lastRunAt, 1739923200000);
   assert.equal(row.nextRunAt, 1739926800000);
   assert.equal(row.lastDuration, 4500);
+  assert.match(row.prompt, /Do nightly sync/);
+  assert.match(row.promptPreview, /Do nightly sync/);
 });
 
 test('toCronViewModel falls back safely when cron data is missing', () => {
@@ -42,4 +47,6 @@ test('toCronViewModel falls back safely when cron data is missing', () => {
   assert.equal(row.lastRunAt, 0);
   assert.equal(row.nextRunAt, 0);
   assert.equal(row.lastDuration, 0);
+  assert.equal(row.prompt, '');
+  assert.equal(row.promptPreview, '');
 });
