@@ -2,7 +2,7 @@ var API_BASE = window.location.pathname.replace(/\/+$/, '');
 var TOKEN_KEY = 'dashboardToken';
 var TOKEN_EXPIRY_KEY = 'dashboardTokenExpiry';
 var TOKEN_LIFETIME = 24 * 60 * 60 * 1000;
-var REMEMBER_ME_LIFETIME = 3 * 60 * 60 * 1000;
+var REMEMBER_ME_LIFETIME = 7 * 24 * 60 * 60 * 1000;
 window.API_BASE = API_BASE;
 
 window.getStoredToken = function getStoredToken() {
