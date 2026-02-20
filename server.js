@@ -95,7 +95,7 @@ if (!MFA_SECRET && fs.existsSync(mfaSecretFile)) {
 
 const sessions = new Map();
 const SESSION_ACTIVITY_TIMEOUT = 30 * 60 * 1000;
-const SESSION_REMEMBER_LIFETIME = 3 * 60 * 60 * 1000;
+const SESSION_REMEMBER_LIFETIME = 7 * 24 * 60 * 60 * 1000;
 
 function hashPassword(password, salt) {
   if (!salt) salt = crypto.randomBytes(32).toString('hex');
